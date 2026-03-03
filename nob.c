@@ -37,6 +37,7 @@ main(int argc, char *argv[]) {
   boilerplate();
   cmd_append(&cmd, "-I/usr/include/freetype2");
   cmd_append(&cmd, "-lX11", "-lXft");
+  cmd_append(&cmd, "-D_GNU_SOURCE");
   compilefile("src/main.c", "build/main.o");
 
 
