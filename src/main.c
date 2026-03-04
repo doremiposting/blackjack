@@ -21,6 +21,14 @@ XftColor colorfg, colorbg;
 Visual *vis;
 Colormap cmap;
 
+#define TBUFCOLS 256
+#define TBUFROWS 128
+typedef struct {
+  char lines[TBUFROWS][TBUFCOLS];
+  int col, row;
+} Termbuf;
+Termbuf tbuf;
+
 struct timespec thenr, nowr;
 long long elapsedr;
 /* #define GFXTICKNS 16666667LL */
@@ -137,6 +145,19 @@ drawresize() {
 }
 
 void
+tbufinit() {
+  int r, c;
+  for (r = 0; r < TBUFROWS; r++) {
+    for (c = 0; c < TBUFCOLS; c++) {
+      tbuf.lines[r][c] = ' ';
+    }
+  }
+  tbuf.row = 0;
+  tbuf.col = 0;
+}
+
+
+void
 ptyinit() {
 }
 
@@ -163,14 +184,17 @@ tsmkill() {
 int
 main(int argc, char *argv[]) {
   XEvent ev;
-  int quit, xfd;
+  int quit, xfd, r, len;
   fd_set fds;
   struct timeval tv;
   long long remaining;
+  char buf[8];
+  KeySym ks;
   x11init();
   fontinit();
   colorsinit();
   drawinit();
+  tbufinit();
   UNUSED(argc); UNUSED(argv);
   quit = 0;
   GETNS(thenr); GETNS(nowr);
@@ -186,11 +210,25 @@ main(int argc, char *argv[]) {
             drawresize();
           }
           break;
-        case KeyPress:
-        switch (XLookupKeysym(&ev.xkey, 0)) {
-          case 'q':
-            quit = 1;
-          default:
+        case KeyPress: {
+          len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+          if (ks == XK_BackSpace) {
+            if (tbuf.col > 0) {
+              tbuf.col--;
+              tbuf.lines[tbuf.row][tbuf.col] = ' ';
+            }
+          }
+          else if (ks == XK_Return) {
+            if (tbuf.row < TBUFROWS - 1) {
+              tbuf.row++; tbuf.col = 0;
+            }
+          }
+          else if (len > 0 && buf[0] >= 0x20 && buf[0] < 0x7f) {
+            if (tbuf.col < TBUFCOLS - 1) {
+              tbuf.lines[tbuf.row][tbuf.col] = buf[0];
+              tbuf.col++;
+            }
+          }
         }
         break;
         case ClientMessage:
@@ -213,7 +251,9 @@ main(int argc, char *argv[]) {
     if (DIFFNS(thenr, nowr) >= GFXTICKNS) {
       GETNS(thenr);
       XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
-      drawcell(0, 0, "hello world!", 12, &colorfg, &colorbg);
+      for (r = 0; r < TBUFROWS; r++) {
+        drawcell(0, r, tbuf.lines[r], TBUFCOLS, &colorfg, &colorbg);
+      }
       drawflush();
     }
   }
