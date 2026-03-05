@@ -3,6 +3,11 @@
 #include <time.h>
 
 #include <sys/select.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xft/Xft.h>
@@ -20,6 +25,8 @@ XftDraw *xftdraw;
 XftColor colorfg, colorbg;
 Visual *vis;
 Colormap cmap;
+int ptyfd;
+pid_t ptypid;
 
 #define TBUFCOLS 256
 #define TBUFROWS 128
@@ -159,6 +166,35 @@ tbufinit() {
 
 void
 ptyinit() {
+  int mfd, sfd;
+  pid_t pid;
+  char *shell, *args[2];
+  mfd = posix_openpt(O_RDWR | O_NOCTTY);
+  if (mfd < 0) { fprintf(stderr, "ERROR: posix_openpt failed!\n"); exit(1); }
+  grantpt(mfd);
+  unlockpt(mfd);
+  sfd = open(ptsname(mfd), O_RDWR | O_NOCTTY);
+  if (sfd < 0) { fprintf(stderr, "ERROR: sub-pty failed to open!\n"); exit(1); }
+
+  pid = fork();
+  if (pid < 0) { fprintf(stderr, "ERROR: fork() failed!\n"); exit(1); }
+  if (pid == 0) {
+    close(mfd);
+    setsid();
+    ioctl(sfd, TIOCSCTTY, 0);
+    dup2(sfd, STDIN_FILENO);
+    dup2(sfd, STDOUT_FILENO);
+    dup2(sfd, STDERR_FILENO);
+    close(sfd);
+    shell = "/bin/sh";
+    args[0] = shell;
+    args[1] = NULL;
+    execvp(shell, args);
+    exit(1);
+  }
+  close(sfd);
+  ptyfd = mfd;
+  ptypid = pid;
 }
 
 void
@@ -167,10 +203,26 @@ ptywrite() {
 
 void
 ptyread() {
+  char buf[256];
+  int i, n;
+  n = read(ptyfd, buf, sizeof(buf));
+  if (n <= 0) { return; }
+  for (i = 0; i < n; i++) {
+    if (buf[i] == '\r') { tbuf.col = 0; }
+    else if (buf[i] == '\n') { if (tbuf.row < TBUFROWS - 1) { tbuf.row++; } }
+    else if (buf[i] >= 0x20 && buf[i] < 0x7f) {
+      if (tbuf.col < TBUFCOLS - 1) {
+        tbuf.lines[tbuf.row][tbuf.col] = buf[i];
+        tbuf.col++;
+      }
+    }
+  }
 }
 
 void
 ptykill() {
+  kill(ptypid, SIGHUP);
+  close(ptyfd);
 }
 
 void
@@ -195,6 +247,7 @@ main(int argc, char *argv[]) {
   colorsinit();
   drawinit();
   tbufinit();
+  ptyinit();
   UNUSED(argc); UNUSED(argv);
   quit = 0;
   GETNS(thenr); GETNS(nowr);
@@ -212,22 +265,8 @@ main(int argc, char *argv[]) {
           break;
         case KeyPress: {
           len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-          if (ks == XK_BackSpace) {
-            if (tbuf.col > 0) {
-              tbuf.col--;
-              tbuf.lines[tbuf.row][tbuf.col] = ' ';
-            }
-          }
-          else if (ks == XK_Return) {
-            if (tbuf.row < TBUFROWS - 1) {
-              tbuf.row++; tbuf.col = 0;
-            }
-          }
-          else if (len > 0 && buf[0] >= 0x20 && buf[0] < 0x7f) {
-            if (tbuf.col < TBUFCOLS - 1) {
-              tbuf.lines[tbuf.row][tbuf.col] = buf[0];
-              tbuf.col++;
-            }
+          if (len > 0) {
+            write(ptyfd, buf, len);
           }
         }
         break;
@@ -244,10 +283,12 @@ main(int argc, char *argv[]) {
     xfd = ConnectionNumber(display);
     FD_ZERO(&fds);
     FD_SET(xfd, &fds);
+    FD_SET(ptyfd, &fds);
     tv.tv_sec = remaining / 1000000000LL;
     tv.tv_usec = (remaining % 1000000000LL) / 1000LL;
-    select(xfd + 1, &fds, NULL, NULL, &tv);
+    select((ptyfd > xfd ? ptyfd : xfd) + 1, &fds, NULL, NULL, &tv);
     GETNS(nowr);
+    if (FD_ISSET(ptyfd, &fds)) { ptyread(); }
     if (DIFFNS(thenr, nowr) >= GFXTICKNS) {
       GETNS(thenr);
       XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
@@ -257,6 +298,10 @@ main(int argc, char *argv[]) {
       drawflush();
     }
   }
+  ptykill();
+  drawkill();
+  killcolors();
+  fontkill();
   x11kill();
   return 0;
 }
