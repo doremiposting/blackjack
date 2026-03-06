@@ -27,12 +27,15 @@ Visual *vis;
 Colormap cmap;
 int ptyfd;
 pid_t ptypid;
+int visrows;
 
 #define TBUFCOLS 256
-#define TBUFROWS 128
+/* #define TBUFROWS 128 */
+#define TBUFROWS 4098
 typedef struct {
   char lines[TBUFROWS][TBUFCOLS];
   int col, row;
+  int scroll;
 } Termbuf;
 Termbuf tbuf;
 
@@ -65,7 +68,7 @@ x11init() {
   gc = XCreateGC(display, window, 0, NULL);
   wmdelwin = XInternAtom(display, "WM_DELETE_WINDOW", false);
   XSetWMProtocols(display, window, &wmdelwin, 1);
-  XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask);
+  XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask);
   XStoreName(display, window, "bj");
   XMapWindow(display, window);
 }
@@ -161,6 +164,7 @@ tbufinit() {
   }
   tbuf.row = 0;
   tbuf.col = 0;
+  tbuf.scroll = 0;
 }
 
 
@@ -209,11 +213,17 @@ ptyread() {
   if (n <= 0) { return; }
   for (i = 0; i < n; i++) {
     if (buf[i] == '\r') { tbuf.col = 0; }
-    else if (buf[i] == '\n') { if (tbuf.row < TBUFROWS - 1) { tbuf.row++; } }
+    else if (buf[i] == '\n') {
+      if (tbuf.row < TBUFROWS - 1) {
+        tbuf.row++;
+
+      }
+    }
     else if (buf[i] >= 0x20 && buf[i] < 0x7f) {
       if (tbuf.col < TBUFCOLS - 1) {
         tbuf.lines[tbuf.row][tbuf.col] = buf[i];
         tbuf.col++;
+        if (tbuf.row >= tbuf.scroll + visrows) { tbuf.scroll = tbuf.row - visrows + 1; }
       }
     }
   }
@@ -236,7 +246,7 @@ tsmkill() {
 int
 main(int argc, char *argv[]) {
   XEvent ev;
-  int quit, xfd, r, len;
+  int quit, xfd, r, len, maxscroll;
   fd_set fds;
   struct timeval tv;
   long long remaining;
@@ -249,6 +259,7 @@ main(int argc, char *argv[]) {
   tbufinit();
   ptyinit();
   UNUSED(argc); UNUSED(argv);
+  visrows = WHEIGHT / (font->ascent + font->descent);
   quit = 0;
   GETNS(thenr); GETNS(nowr);
   while (!quit) {
@@ -260,16 +271,37 @@ main(int argc, char *argv[]) {
               ev.xconfigure.height != (int)WHEIGHT) {
             WWIDTH = ev.xconfigure.width;
             WHEIGHT = ev.xconfigure.height;
+            visrows = WHEIGHT / (font->ascent + font->descent);
             drawresize();
           }
           break;
         case KeyPress: {
-          len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-          if (len > 0) {
-            write(ptyfd, buf, len);
+            len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+            if (ks == XK_Prior) {
+              tbuf.scroll -= visrows;
+              if (tbuf.scroll < 0) { tbuf.scroll = 0; }
+            } else if (ks == XK_Next) {
+              maxscroll = tbuf.row - visrows + 1;
+              if (maxscroll < 0) { maxscroll = 0; }
+              tbuf.scroll += visrows;
+              if (tbuf.scroll > maxscroll) { tbuf.scroll = maxscroll; }
+            } else if (len > 0) {
+              write(ptyfd, buf, len);
+            }
           }
-        }
-        break;
+          break;
+        case ButtonPress: {
+            if (ev.xbutton.button == Button4) {
+              tbuf.scroll -= 3;
+              if (tbuf.scroll < 0) { tbuf.scroll = 0; }
+            } else if (ev.xbutton.button == Button5) {
+              maxscroll = tbuf.row - visrows + 1;
+              if (maxscroll < 0) { maxscroll = 0; }
+              tbuf.scroll += 3;
+              if (tbuf.scroll > maxscroll) { tbuf.scroll = maxscroll; }
+            }
+          }
+          break;
         case ClientMessage:
           if ((Atom) ev.xclient.data.l[0] == wmdelwin) { quit = 1; }
           break;
@@ -292,8 +324,8 @@ main(int argc, char *argv[]) {
     if (DIFFNS(thenr, nowr) >= GFXTICKNS) {
       GETNS(thenr);
       XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
-      for (r = 0; r < TBUFROWS; r++) {
-        drawcell(0, r, tbuf.lines[r], TBUFCOLS, &colorfg, &colorbg);
+      for (r = 0; r < visrows && (tbuf.scroll + r) < TBUFROWS; r++) {
+        drawcell(0, r, tbuf.lines[tbuf.scroll + r], TBUFCOLS, &colorfg, &colorbg);
       }
       drawflush();
     }
