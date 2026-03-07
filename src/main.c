@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
 
 #include <sys/select.h>
 #include <unistd.h>
@@ -28,10 +29,12 @@ Colormap cmap;
 int ptyfd;
 pid_t ptypid;
 int visrows;
+volatile sig_atomic_t toggletheme;
+int isdark;
 
 #define TBUFCOLS 256
 /* #define TBUFROWS 128 */
-#define TBUFROWS 4098
+#define TBUFROWS 8196
 typedef struct {
   char lines[TBUFROWS][TBUFCOLS];
   int col, row;
@@ -41,8 +44,8 @@ Termbuf tbuf;
 
 struct timespec thenr, nowr;
 long long elapsedr;
-/* #define GFXTICKNS 16666667LL */
-#define GFXTICKNS 600000000LL
+#define GFXTICKNS 16666667LL
+/* #define GFXTICKNS 600000000LL */
 #define GETNS(ts) (clock_gettime(CLOCK_MONOTONIC, &ts))
 #define DIFFNS(start, end) \
       ((int64_t)((end).tv_sec - (start).tv_sec) * 1000000000LL + \
@@ -50,6 +53,32 @@ long long elapsedr;
 
 
 unsigned int WWIDTH, WHEIGHT;
+
+#define ERRORTH -1
+#define LIGHTTH 0
+#define DARKTH 1
+int
+detectdark() {
+  char path[512];
+  char *home, *xdg;
+  FILE *f;
+  char line[256];
+  static char *inipath = "gtk-3.0/settings.ini";
+  xdg = getenv("XDG_CONFIG_HOME");
+  home = getenv("HOME");
+  if (xdg) {
+    snprintf(path, sizeof(path), "%s/%s", xdg, inipath);
+  } else if (home) {
+    snprintf(path, sizeof(path), "%s/.config/%s", home, inipath);
+  } else { return ERRORTH; }
+  f = fopen(path, "r");
+  if (!f) { return ERRORTH; }
+  while (fgets(line, sizeof(line), f)) {
+    if (strstr(line, "gtk-application-prefer-dark-theme=1")) { fclose(f); return DARKTH; }
+  }
+  fclose(f);
+  return LIGHTTH;
+}
 
 void
 x11init() {
@@ -99,14 +128,37 @@ fontkill() {
   XftFontClose(display, font);
 }
 
+void applycolors();
 void
 colorsinit() {
   vis = DefaultVisual(display, DefaultScreen(display));
   cmap = DefaultColormap(display, DefaultScreen(display));
-  /* TODO: Pull colors out into config.h */
-  XftColorAllocName(display, vis, cmap, "#000000", &colorfg);
-  XftColorAllocName(display, vis, cmap, "#6495ED", &colorbg);
+  applycolors();
 }
+
+void
+applycolors() {
+  static int inited = 0;
+  if (inited) {
+    XftColorFree(display, vis, cmap, &colorfg);
+    XftColorFree(display, vis, cmap, &colorbg);
+  }
+  inited = 1;
+  if (isdark) {
+    XftColorAllocName(display, vis, cmap, "#c0caf5", &colorfg);
+    XftColorAllocName(display, vis, cmap, "#1a1b26", &colorbg);
+  } else {
+    /* TODO: Pull colors out into config.h */
+    XftColorAllocName(display, vis, cmap, "#000000", &colorfg);
+    XftColorAllocName(display, vis, cmap, "#6495ED", &colorbg);
+  }
+}
+
+static void
+handlesigusr1(int sig) {
+  UNUSED(sig);
+  toggletheme = 1;
+} 
 
 void
 killcolors() {
@@ -179,7 +231,6 @@ ptyinit() {
   unlockpt(mfd);
   sfd = open(ptsname(mfd), O_RDWR | O_NOCTTY);
   if (sfd < 0) { fprintf(stderr, "ERROR: sub-pty failed to open!\n"); exit(1); }
-
   pid = fork();
   if (pid < 0) { fprintf(stderr, "ERROR: fork() failed!\n"); exit(1); }
   if (pid == 0) {
@@ -199,6 +250,7 @@ ptyinit() {
   close(sfd);
   ptyfd = mfd;
   ptypid = pid;
+  fcntl(ptyfd, F_SETFL, fcntl(ptyfd, F_GETFL) | O_NONBLOCK);
 }
 
 void
@@ -246,12 +298,18 @@ tsmkill() {
 int
 main(int argc, char *argv[]) {
   XEvent ev;
-  int quit, xfd, r, len, maxscroll;
+  int quit, xfd, r, len, maxscroll, darkth, sel;
   fd_set fds;
   struct timeval tv;
   long long remaining;
   char buf[8];
   KeySym ks;
+  toggletheme = 0;
+  darkth = detectdark();
+  if (darkth < 0) {
+    fprintf(stderr, "Error when reading theme files!\n");
+  } else if (darkth) { isdark = 1; } else { isdark = 0; }
+  signal(SIGUSR1, handlesigusr1);
   x11init();
   fontinit();
   colorsinit();
@@ -263,6 +321,11 @@ main(int argc, char *argv[]) {
   quit = 0;
   GETNS(thenr); GETNS(nowr);
   while (!quit) {
+    if (toggletheme) {
+      toggletheme = 0;
+      isdark = !isdark;
+      applycolors();
+    }
     while (XPending(display) > 0) {
       XNextEvent(display, &ev);
       switch (ev.type) {
@@ -318,9 +381,9 @@ main(int argc, char *argv[]) {
     FD_SET(ptyfd, &fds);
     tv.tv_sec = remaining / 1000000000LL;
     tv.tv_usec = (remaining % 1000000000LL) / 1000LL;
-    select((ptyfd > xfd ? ptyfd : xfd) + 1, &fds, NULL, NULL, &tv);
+    sel = select((ptyfd > xfd ? ptyfd : xfd) + 1, &fds, NULL, NULL, &tv);
     GETNS(nowr);
-    if (FD_ISSET(ptyfd, &fds)) { ptyread(); }
+    if (sel > 0 && FD_ISSET(ptyfd, &fds)) { ptyread(); }
     if (DIFFNS(thenr, nowr) >= GFXTICKNS) {
       GETNS(thenr);
       XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
