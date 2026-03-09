@@ -42,6 +42,24 @@ typedef struct {
 } Termbuf;
 Termbuf tbuf;
 
+typedef enum {
+  TSMNORMAL,
+  TSMESC,
+  TSMCHARSEL,
+  TSMCSI,
+  TSMOSC
+} Tsmstate;
+#define TSMPARAMS 8
+typedef struct {
+  Tsmstate state;
+  int params[TSMPARAMS];
+  int nparams;
+  int crtparam;
+  int hascurrent;
+  int savecol, saverow;
+} Tsm;
+Tsm tsm;
+
 struct timespec thenr, nowr;
 long long elapsedr;
 #define GFXTICKNS 16666667LL
@@ -106,14 +124,6 @@ void
 x11kill() {
   XDestroyWindow(display, window);
   XCloseDisplay(display);
-}
-
-void
-xstnginit() {
-}
-
-void
-xstngkill() {
 }
 
 void
@@ -257,28 +267,16 @@ void
 ptywrite() {
 }
 
+void tsmcsi(char z);
+void tsmproc(char c);
+
 void
 ptyread() {
   char buf[256];
   int i, n;
   n = read(ptyfd, buf, sizeof(buf));
   if (n <= 0) { return; }
-  for (i = 0; i < n; i++) {
-    if (buf[i] == '\r') { tbuf.col = 0; }
-    else if (buf[i] == '\n') {
-      if (tbuf.row < TBUFROWS - 1) {
-        tbuf.row++;
-
-      }
-    }
-    else if (buf[i] >= 0x20 && buf[i] < 0x7f) {
-      if (tbuf.col < TBUFCOLS - 1) {
-        tbuf.lines[tbuf.row][tbuf.col] = buf[i];
-        tbuf.col++;
-        if (tbuf.row >= tbuf.scroll + visrows) { tbuf.scroll = tbuf.row - visrows + 1; }
-      }
-    }
-  }
+  for (i = 0; i < n; i++) { tsmproc(buf[i]); }
 }
 
 void
@@ -289,10 +287,185 @@ ptykill() {
 
 void
 tsminit() {
+  tsm.state = TSMNORMAL;
+  tsm.nparams = 0;
+  tsm.crtparam = 0;
+  tsm.hascurrent = 0;
+  tsm.savecol = 0;
+  tsm.saverow = 0;
 }
 
 void
-tsmkill() {
+tsmcsi(char z) {
+  int p, q, r, c;
+  if (tsm.hascurrent && tsm.nparams < TSMPARAMS) {
+    tsm.params[tsm.nparams++] = tsm.crtparam;
+  }
+  p = tsm.nparams > 0 ? tsm.params[0] : 0;
+  q = tsm.nparams > 1 ? tsm.params[1] : 0;
+  switch (z) {
+    case 'A': /* cursor up */
+      if (!p) { p = 1; }
+      tbuf.row -= p;
+      if (tbuf.row < tbuf.scroll) { tbuf.row = tbuf.scroll; }
+      break;
+    case 'B': /* cursor down */
+      if (!p) { p = 1; }
+      tbuf.row += p;
+      if (tbuf.row >= tbuf.scroll + visrows) { tbuf.row = tbuf.scroll + visrows - 1; }
+      break;
+    case 'C': /* cursor right */
+      if (!p) { p = 1; }
+      tbuf.col += p;
+      if (tbuf.col >= TBUFCOLS) { tbuf.col = TBUFCOLS - 1; }
+      break;
+    case 'D': /* cursor left */
+      if (!p) { p = 1; }
+      tbuf.col -= p;
+      if (tbuf.col < 0) { tbuf.col = 0; }
+      break;
+    case 'H': case 'f': /* cursor to row/col (1-based) */
+      r = p ? p - 1 : 0;
+      c = q ? q - 1 : 0;
+      tbuf.row = tbuf.scroll + r;
+      tbuf.col = c;
+      if (tbuf.row >= tbuf.scroll + visrows) { tbuf.row = tbuf.scroll + visrows - 1; }
+      if (tbuf.col >= TBUFCOLS) { tbuf.col = TBUFCOLS - 1; }
+      break;
+    case 'J': /* erase in display */
+      if (p == 0) { /* cursor to end */
+        memset(&tbuf.lines[tbuf.row][tbuf.col], ' ', TBUFCOLS - tbuf.col);
+        for (r = tbuf.row + 1; r < tbuf.scroll + visrows && r < TBUFROWS; r++) {
+          memset(tbuf.lines[r], ' ', TBUFCOLS);
+        }
+      } else if (p == 1) { /* start to cursor */
+        for (r = tbuf.scroll; r < tbuf.row && r < TBUFROWS; r++) {
+          memset(tbuf.lines[r], ' ', TBUFCOLS);
+        }
+        memset(tbuf.lines[r], ' ', tbuf.col + 1);
+      } else if (p == 2) { /* whole screen */
+        for (r = tbuf.scroll; r < tbuf.scroll + visrows && r < TBUFROWS; r++) {
+          memset(tbuf.lines[r], ' ', TBUFCOLS);
+        }
+      }
+      break;
+    case 'K': /* erase in line */
+      if (p == 0) { memset (&tbuf.lines[tbuf.row][tbuf.col], ' ', TBUFCOLS - tbuf.col); }
+      else if (p == 1) { memset(tbuf.lines[tbuf.row], ' ', tbuf.col + 1); }
+      else if (p == 2) { memset(tbuf.lines[tbuf.row], ' ', TBUFCOLS); }
+      break;
+    default: /* SGR (m), mode set/reset (h/l), and miscellaneous */
+      break;
+  }
+}
+
+void
+tsmproc(char c) {
+  unsigned char uc;
+  uc = (unsigned char)c;
+  switch (tsm.state) {
+    case TSMNORMAL:
+      if (uc == 0x1B) { tsm.state = TSMESC; }
+      else if (uc == 0x07) { /* TODO: BEL */ }
+      else if (uc == '\b') { if (tbuf.col > 0) { tbuf.col--; } }
+      else if (uc == '\t') {
+        tbuf.col = (tbuf.col + 8) & ~7;
+        if (tbuf.col >= TBUFCOLS) { tbuf.col = TBUFCOLS - 1; }
+      }
+      else if (uc == '\r') { tbuf.col = 0; }
+      else if (uc == '\n') {
+        if (tbuf.row < TBUFROWS - 1) { tbuf.row++; }
+        if (tbuf.row >= tbuf.scroll + visrows) {
+          tbuf.scroll = tbuf.row - visrows + 1;
+        }
+      }
+      else if (uc >= 0x20 && uc < 0x7F) {
+        if (tbuf.col < TBUFCOLS - 1) {
+          tbuf.lines[tbuf.row][tbuf.col] = c;
+          tbuf.col++;
+          if (tbuf.row >= tbuf.scroll + visrows) {
+            tbuf.scroll = tbuf.row - visrows + 1;
+          }
+        }
+      }
+      break;
+    case TSMESC:
+      if (c == '[') {
+        tsm.state = TSMCSI;
+        tsm.nparams = 0;
+        tsm.crtparam = 0;
+        tsm.hascurrent = 0;
+      } else if (c == '(' || c == ')' || c == '*' || c == '+') {
+        tsm.state = TSMCHARSEL;
+      } else if (c == 'M') { /* reverse index */
+        if (tbuf.row > tbuf.scroll) { tbuf.row--; }
+        tsm.state = TSMNORMAL;
+      } else if (c == 'D') { /* cursor down or advance */
+        if (tbuf.row < TBUFROWS - 1) { tbuf.row++; }
+        if (tbuf.row >= tbuf.scroll + visrows) {
+          tbuf.scroll = tbuf.row - visrows + 1;
+        }
+        tsm.state = TSMNORMAL;
+      } else if (c == 'E') { /* Next line CR */
+        tbuf.col = 0;
+        if (tbuf.row < TBUFROWS - 1) { tbuf.row++; }
+        if (tbuf.row >= tbuf.scroll + visrows) {
+          tbuf.scroll = tbuf.row - visrows + 1;
+        }
+        tsm.state = TSMNORMAL;
+      } else if (c == '7') { /* Save cursor pos */
+        tsm.savecol = tbuf.col;
+        tsm.saverow = tbuf.row;
+        tsm.state = TSMNORMAL;
+      } else if (c == '8') { /* Restore cursor pos */
+        tbuf.col = tsm.savecol;
+        tbuf.row = tsm.saverow;
+        tsm.state = TSMNORMAL;
+      } else if (c == 'c') { /* full reset */
+        tbufinit();
+        tsminit();
+      } else if (c == ']') { /* OSC, title BEL */
+        tsm.state = TSMOSC;
+      } else if (c == '=' || c == '>') {
+        /* Application/normal keypad mode: skip for now */
+        tsm.state = TSMNORMAL;
+      } else { /* Unrecognized two-byte */
+        tsm.state = TSMNORMAL;
+      }
+      break;
+    case TSMOSC:
+      /* TODO: Return to TSMESC for now to reset cleanly. */
+      if (uc == 0x07) { tsm.state = TSMNORMAL; }
+      else if (uc == 0x1B) { tsm.state = TSMESC; }
+      /* TODO: Silently consume rest of the payload */
+      break;
+    case TSMCHARSEL:
+      /* Drop first byte and discard */
+      /* Vestigial from VT100 */
+      /* TODO: DEC line-drawing (ESC ( 0) used by ncurses */
+      tsm.state = TSMNORMAL;
+      break;
+    case TSMCSI:
+      if (uc >= '0' && uc <= '9') {
+        tsm.crtparam = tsm.crtparam * 10 + (uc - '0');
+        tsm.hascurrent = 1;
+      } else if (c == ';') {
+        if (tsm.nparams < TSMPARAMS) { tsm.params[tsm.nparams++] = tsm.crtparam; }
+        tsm.crtparam = 0;
+        tsm.hascurrent = 0;
+      } else if (c == '?' || c == '>' || c == '|') {
+        /* private/intermediate bytes: flag and keep collecting */
+      } else if (uc >= 0x40 && uc <= 0x7E) {
+        /* final byte: dispatch then reset */
+        tsmcsi(c);
+        tsm.state = TSMNORMAL;
+      } else {
+        /* malformed */
+        tsm.state = TSMNORMAL;
+      }
+      break;
+    default: break;
+  }
 }
 
 int
@@ -315,6 +488,7 @@ main(int argc, char *argv[]) {
   colorsinit();
   drawinit();
   tbufinit();
+  tsminit();
   ptyinit();
   UNUSED(argc); UNUSED(argv);
   visrows = WHEIGHT / (font->ascent + font->descent);
