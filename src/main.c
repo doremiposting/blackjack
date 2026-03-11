@@ -41,6 +41,7 @@ typedef struct {
   int col, row;
   int scroll;
   int svrow, svcol;
+  int scrolltop, scrollbot;
 } Termbuf;
 Termbuf tbufs[2];
 Termbuf *tbuf;
@@ -61,8 +62,57 @@ typedef struct {
   int hascurrent;
   int savecol, saverow;
   int priv;
+  int curshape, curblink;
+  int appkeys;
 } Tsm;
 Tsm tsm;
+
+typedef struct {
+  const char *black, *brblack;
+  const char *red, *brred;
+  const char *green, *brgreen;
+  const char *yellow, *bryellow;
+  const char *blue, *brblue;
+  const char *magenta, *magenta;
+  const char *cyan, *brcyan;
+  const char *white, *brwhite;
+  char **slushclrs;
+  const char *fg, *bg;
+  const char *cursorgf, *cursorbg;
+  const char *rcursorfg, *rcursorbg;
+} Colorscheme;
+static const Colorscheme darksch = {
+  .black     = "#15161e", .brblack   = "#414868",
+  .red       = "#f7768e", .brred     = "#f7768e",
+  .green     = "#9ece6a", .brgreen   = "#9ece6a",
+  .yellow    = "#e0af68", .bryellow  = "#e0af68",
+  .blue      = "#7aa2f7", .brblue    = "#7aa2f7",
+  .magenta   = "#bb9af7", .brmagenta = "#bb9af7",
+  .cyan      = "#7dcfff", .brcyan    = "#7dcfff",
+  .white     = "#a9b1d6", .brwhite   = "#c0caf5",
+  .slushclrs = (void *)0;
+  .fg        = "#c0caf5", .bg        = "#1a1b26",
+  .cursorfg  = "#1a1b26", .cursorbg  = "#c0caf5",
+  .rcursorfg = "#c0caf5", .rcursorbg = "#1a1b26",
+};
+
+static const Colorscheme lightsch = {
+  .black     = "#000000", .brblack   = "#444444",
+  .red       = "#cc0000", .brred     = "#ef2929",
+  .green     = "#4e9a06", .brgreen   = "#8ae234",
+  .yellow    = "#c4a000", .bryellow  = "#fce94f",
+  .blue      = "#3465a4", .brblue    = "#729fcf",
+  .magenta   = "#75507b", .brmagenta = "#ad7fa8",
+  .cyan      = "#06989a", .brcyan    = "#34e2e2",
+  .white     = "#d3d7cf", .brwhite   = "#eeeeec",
+  .slushclrs = (void *)0,
+  .fg        = "#000000", .bg        = "#6495ed",
+  .cursorfg  = "#6495ed", .cursorbg  = "#000000",
+  .rcursorfg = "#000000", .rcursorbg = "#6495ed",
+};
+
+const Colorscheme *clrs;
+
 
 struct timespec thenr, nowr;
 long long elapsedr;
@@ -159,13 +209,12 @@ applycolors() {
   }
   inited = 1;
   if (isdark) {
-    XftColorAllocName(display, vis, cmap, "#c0caf5", &colorfg);
-    XftColorAllocName(display, vis, cmap, "#1a1b26", &colorbg);
+    clrs = &darksch;
   } else {
-    /* TODO: Pull colors out into config.h */
-    XftColorAllocName(display, vis, cmap, "#000000", &colorfg);
-    XftColorAllocName(display, vis, cmap, "#6495ED", &colorbg);
+    clrs = &lightsch;
   }
+  XftColorAllocName(display, vis, cmap, clrs->fg, &colorfg);
+  XftColorAllocName(display, vis, cmap, clrs->bg, &colorbg);
 }
 
 static void
@@ -233,6 +282,8 @@ tbufclear(Termbuf *b) {
   b->scroll = 0;
   b->svrow = 0;
   b->svcol = 0;
+  b->scrolltop = 0;
+  b->scrollbot = 0;
 }
 
 void
@@ -264,7 +315,7 @@ ptyinit() {
     dup2(sfd, STDOUT_FILENO);
     dup2(sfd, STDERR_FILENO);
     close(sfd);
-    shell = "/bin/sh";
+    shell = "/bin/bash";
     args[0] = shell;
     args[1] = NULL;
     execvp(shell, args);
@@ -319,11 +370,13 @@ tsminit() {
   tsm.savecol = 0;
   tsm.saverow = 0;
   tsm.priv = 0;
+  tsm.curshape = 0; tsm.curblink = 0;
 }
 
 void
 tsmcsi(char z) {
-  int p, q, r, c;
+  int p, q, r, c, i;
+  int t, b, nt, nm;
   if (tsm.hascurrent && tsm.nparams < TSMPARAMS) {
     tsm.params[tsm.nparams++] = tsm.crtparam;
   }
@@ -381,24 +434,117 @@ tsmcsi(char z) {
       else if (p == 2) { memset(tbuf->lines[tbuf->row], ' ', TBUFCOLS); }
       break;
     case 'h':
-      /* TODO: Only handling alternate screen switching for now */
-      if (tsm.priv && p == 1049 && tbuf == &tbufs[0]) {
-        tbuf->svrow = tbuf->row;
-        tbuf->svcol = tbuf->col;
-        tbufclear(&tbufs[1]);
-        tbuf = &tbufs[1];
+      if (tsm.priv) {
+        for (i = 0; i < tsm.nparams; i++) {
+          if (tsm.params[i] == 1049 && tbuf == &tbufs[0]) {
+            tbuf->svrow = tbuf->row;
+            tbuf->svcol = tbuf->col;
+            tbufclear(&tbufs[1]);
+            tbuf = &tbufs[1];
+          } else if (tsm.params[i] == 1) { tsm.appkeys = 1; }
+        }
       }
       break;
     case 'l':
-      if (tsm.priv && p == 1049 && tbuf == &tbufs[1]) {
-        tbuf = &tbufs[0];
-        tbuf->row = tbuf->svrow;
-        tbuf->col = tbuf->svcol;
+      if (tsm.priv) {
+        for (i = 0; i < tsm.nparams; i++) {
+          if (tsm.params[i] == 1049 && tbuf == &tbufs[1]) {
+            tbuf = &tbufs[0];
+            tbuf->row = tbuf->svrow;
+            tbuf->col = tbuf->svcol;
+          } else if (tsm.params[i] == 1) { tsm.appkeys = 0; }
+        }
       }
+      break;
+    case 'q':
+      if (tsm.priv) {
+        tsm.curblink = (p == 0 || p == 1 || p == 3 || p == 5);
+        if (p <= 2) { tsm.curshape = 0; } /* block */
+        else if (p <= 4) { tsm.curshape = 1; } /* underline */
+        else { tsm.curshape = 2; } /* bar */
+      }
+      break;
+    case 'r': /* set scrolling region */
+      tbuf->scrolltop = p ? p-1 : 0;
+      tbuf->scrollbot = q ? q-1 : visrows - 1;
+      /* clamp to 2-row region and ensure within screen */
+      if (tbuf->scrollbot >= visrows) { tbuf->scrollbot = visrows - 1; }
+      if (tbuf->scrolltop >= tbuf->scrollbot) { tbuf->scrolltop = 0; tbuf->scrollbot = visrows - 1; }
+      tbuf->row = tbuf->scroll + tbuf->scrolltop;
+      tbuf->col = 0;
+      break;
+    case 'L': /* insert lines, push lines at cursor down */
+      if (!p) { p = 1; }
+      b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
+      nt = tbuf->row;
+      nm = b - nt - p + 1;
+      if (nm > 0) {
+        memmove(tbuf->lines[nt + p], tbuf->lines[nt],
+            nm * TBUFCOLS);
+      }
+      for (r = nt; r < nt + p && r <= b; r++) {
+        memset(tbuf->lines[r], ' ', TBUFCOLS);
+      }
+      break;
+    case 'M': /* delete lines, pull lines up to cursor */
+      if (!p) { p = 1; }
+      b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
+      nt = tbuf->row;
+      nm = b - nt - p + 1;
+      if (nm > 0) {
+        memmove(tbuf->lines[nt], tbuf->lines[nt + p],
+            nm * TBUFCOLS);
+      }
+      for (r = b - p + 1; r <= b; r++) {
+        memset(tbuf->lines[r], ' ', TBUFCOLS);
+      }
+      break;
+    case 'S': /* scroll up, shift region by p */
+      if (!p) { p = 1; }
+      t = tbuf->scroll + tbuf->scrolltop;
+      b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
+      nm = b - t - p + 1;
+      if (nm > 0) { memmove(tbuf->lines[t], tbuf->lines[t+p], nm * TBUFCOLS); }
+      for (r = b - p + 1; r <= b; r++) { memset(tbuf->lines[r], ' ', TBUFCOLS); }
+      break;
+    case 'T': /* scroll down, shift region by p */
+      if (!p) { p = 1; }
+      t = tbuf->scroll + tbuf->scrolltop;
+      b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
+      nm = b - t - p + 1;
+      if (nm > 0) { memmove(tbuf->lines[t+p], tbuf->lines[t], nm * TBUFCOLS); }
+      for (r = t; r < t + p; r++) { memset(tbuf->lines[r], ' ', TBUFCOLS); }
       break;
     default: /* SGR (m), mode set/reset (h/l), and miscellaneous */
       break;
   }
+}
+
+static void
+tbufindex() {
+  int bot, top;
+  top = tbuf->scroll + tbuf->scrolltop;
+  bot = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
+  if (tbuf->row == bot) {
+    memmove(tbuf->lines[top], tbuf->lines[top+1], (bot - top) * TBUFCOLS);
+    memset(tbuf->lines[bot], ' ', TBUFCOLS);
+  } else {
+    if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
+    if (!tbuf->scrollbot && tbuf->row >= tbuf->scroll + visrows) {
+      tbuf->scroll = tbuf->row - visrows + 1;
+    }
+  }
+}
+
+static void
+tbufrevindex () {
+  int bot, top;
+  top = tbuf->scroll + tbuf->scrolltop;
+  bot = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
+  if (tbuf->row == top) {
+    memmove(tbuf->lines[top+1], tbuf->lines[top], (bot - top) * TBUFCOLS);
+    memset(tbuf->lines[top], ' ', TBUFCOLS);
+  } else { if (tbuf->row > tbuf->scroll) { tbuf->row--; }}
 }
 
 void
@@ -415,12 +561,7 @@ tsmproc(char c) {
         if (tbuf->col >= TBUFCOLS) { tbuf->col = TBUFCOLS - 1; }
       }
       else if (uc == '\r') { tbuf->col = 0; }
-      else if (uc == '\n') {
-        if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
-        if (tbuf->row >= tbuf->scroll + visrows) {
-          tbuf->scroll = tbuf->row - visrows + 1;
-        }
-      }
+      else if (uc == '\n') { tbufindex(); }
       else if (uc >= 0x20 && uc < 0x7F) {
         if (tbuf->col < TBUFCOLS - 1) {
           tbuf->lines[tbuf->row][tbuf->col] = c;
@@ -441,20 +582,14 @@ tsmproc(char c) {
       } else if (c == '(' || c == ')' || c == '*' || c == '+') {
         tsm.state = TSMCHARSEL;
       } else if (c == 'M') { /* reverse index */
-        if (tbuf->row > tbuf->scroll) { tbuf->row--; }
+        tbufrevindex();
         tsm.state = TSMNORMAL;
       } else if (c == 'D') { /* cursor down or advance */
-        if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
-        if (tbuf->row >= tbuf->scroll + visrows) {
-          tbuf->scroll = tbuf->row - visrows + 1;
-        }
+        tbufindex();
         tsm.state = TSMNORMAL;
       } else if (c == 'E') { /* Next line CR */
         tbuf->col = 0;
-        if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
-        if (tbuf->row >= tbuf->scroll + visrows) {
-          tbuf->scroll = tbuf->row - visrows + 1;
-        }
+        tbufindex();
         tsm.state = TSMNORMAL;
       } else if (c == '7') { /* Save cursor pos */
         tsm.savecol = tbuf->col;
@@ -518,6 +653,7 @@ int
 main(int argc, char *argv[]) {
   XEvent ev;
   int quit, xfd, r, len, maxscroll, darkth, sel;
+  int cw, ch, cx, cy, crow, ccol;
   fd_set fds;
   struct timeval tv;
   long long remaining;
@@ -563,14 +699,53 @@ main(int argc, char *argv[]) {
         case KeyPress: {
             len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
             if (ks == XK_Prior) {
-              tbuf->scroll -= visrows;
-              if (tbuf->scroll < 0) { tbuf->scroll = 0; }
+              if (ev.xkey.state & ShiftMask) {
+                tbuf->scroll -= visrows;
+                if (tbuf->scroll < 0) { tbuf->scroll = 0; }
+              } else {
+                write (ptyfd, "\033[5~", 4);
+              }
             } else if (ks == XK_Next) {
-              maxscroll = tbuf->row - visrows + 1;
-              if (maxscroll < 0) { maxscroll = 0; }
-              tbuf->scroll += visrows;
-              if (tbuf->scroll > maxscroll) { tbuf->scroll = maxscroll; }
-            } else if (len > 0) {
+              if (ev.xkey.state & ShiftMask) {
+                maxscroll = tbuf->row - visrows + 1;
+                if (maxscroll < 0) { maxscroll = 0; }
+                tbuf->scroll += visrows;
+                if (tbuf->scroll > maxscroll) { tbuf->scroll = maxscroll; }
+              } else {
+                write(ptyfd, "\033[6~", 4);
+              }
+            } else if (ks == XK_Up) {
+              write(ptyfd, tsm.appkeys ? "\033OA" : "\033[A", 3);
+            } else if (ks == XK_Down) {
+              write(ptyfd, tsm.appkeys ? "\033OB" : "\033[B", 3);
+            } else if (ks == XK_Right) {
+              write(ptyfd, tsm.appkeys ? "\033OC" : "\033[C", 3);
+            } else if (ks == XK_Left) {
+              write(ptyfd, tsm.appkeys ? "\033OD" : "\033[D", 3);
+            } else if (ks == XK_Home) {
+              /* write(ptyfd, tsm.appkeys ? "\033OH" : "\033[1~", 4); */
+              write(ptyfd, "\033[1~", 4);
+            } else if (ks == XK_End) {
+              /* write(ptyfd, tsm.appkeys ? "\033OF" : "\033[4~", 4); */
+              write(ptyfd, "\033[4~", 4);
+            }else if (ks == XK_Delete) {
+              write(ptyfd, "\033[3~", 4);
+            } else if (ks == XK_Insert) {
+              write(ptyfd, "\033[2~", 4);
+            }
+            else if (ks == XK_F1) { write(ptyfd, "\033OP", 3); }
+            else if (ks == XK_F2) { write(ptyfd, "\033OQ", 3); }
+            else if (ks == XK_F3) { write(ptyfd, "\033OR", 3); }
+            else if (ks == XK_F4) { write(ptyfd, "\033OS", 3); }
+            else if (ks == XK_F5) { write(ptyfd, "\033[15~", 5); }
+            else if (ks == XK_F6) { write(ptyfd, "\033[17~", 5); }
+            else if (ks == XK_F7) { write(ptyfd, "\033[18~", 5); }
+            else if (ks == XK_F8) { write(ptyfd, "\033[19~", 5); }
+            else if (ks == XK_F9) { write(ptyfd, "\033[20~", 5); }
+            else if (ks == XK_F10) { write(ptyfd, "\033[21~", 5); }
+            else if (ks == XK_F11) { write(ptyfd, "\033[23~", 5); }
+            else if (ks == XK_F12) { write(ptyfd, "\033[24~", 5); }
+            else if (len > 0) {
               write(ptyfd, buf, len);
             }
           }
@@ -613,6 +788,23 @@ main(int argc, char *argv[]) {
       XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
       for (r = 0; r < visrows && (tbuf->scroll + r) < TBUFROWS; r++) {
         drawcell(0, r, tbuf->lines[tbuf->scroll + r], TBUFCOLS, &colorfg, &colorbg);
+      }
+      cw = font->max_advance_width;
+      ch = font->ascent + font->descent;
+      crow = tbuf->row - tbuf->scroll;
+      ccol = tbuf->col;
+      cx = ccol * cw;
+      cy = crow * ch;
+      if (crow >= 0 && crow < visrows) {
+        if (tsm.curshape == 1) { /* underline */
+          XftDrawRect(xftdraw, &colorfg, cx, cy+ch - 2, cw, 2);
+        } else if (tsm.curshape == 2) { /* bar */
+          XftDrawRect(xftdraw, &colorfg, cx, cy, 2, ch);
+        } else { /* block, needs inverting */
+          drawcell(ccol, crow,
+              &tbuf->lines[tbuf->row][ccol], 1,
+              &colorbg, &colorfg);
+        }
       }
       drawflush();
     }
