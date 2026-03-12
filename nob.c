@@ -37,12 +37,13 @@ main(int argc, char *argv[]) {
   boilerplate();
   cmd_append(&cmd, "-I/usr/include/freetype2");
   cmd_append(&cmd, "-lX11", "-lXft");
+  cmd_append(&cmd, "-lm");
   cmd_append(&cmd, "-D_GNU_SOURCE");
   compilefile("src/main.c", "build/main.o");
 
 
 	cmd_append(&cmd, CC, "-g", "-fPIE", "-pie", "-o", "bj",
-    "-lX11", "-L/opt/X11/lib/", "-lXft",
+    "-lX11", "-L/opt/X11/lib/", "-lXft", "-lm",
     "build/main.o");
 	if (!cmd_run(&cmd)) { return 1; }
 }

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
+#include <math.h>
 
 #include <errno.h>
 #include <sys/select.h>
@@ -24,20 +25,30 @@ Atom wmdelwin;
 XftFont *font;
 Pixmap pixmap;
 XftDraw *xftdraw;
-XftColor colorfg, colorbg;
 Visual *vis;
 Colormap cmap;
 int ptyfd;
 pid_t ptypid;
-int visrows;
+int visrows, viscols;
 volatile sig_atomic_t toggletheme;
 int isdark;
 
 #define TBUFCOLS 256
 /* #define TBUFROWS 128 */
 #define TBUFROWS 8196
+#define CDEFAULT 255 /* sentinel: use terminal defaults for fg and bg */
+#define ATTRBOLD (1<<0)
+#define ATTRDIM (1<<1)
+#define ATTRITALIC (1<<2)
+#define ATTRUNDER (1<<3)
+#define ATTRREVERSE (1<<4)
 typedef struct {
-  char lines[TBUFROWS][TBUFCOLS];
+  char ch;
+  unsigned char fg, bg;
+  unsigned char attrs;
+} Cell;
+typedef struct {
+  Cell lines[TBUFROWS][TBUFCOLS];
   int col, row;
   int scroll;
   int svrow, svcol;
@@ -64,22 +75,26 @@ typedef struct {
   int priv;
   int curshape, curblink;
   int appkeys;
+  unsigned char sgrfg, sgrbg;
+  unsigned char sgrattrs;
 } Tsm;
 Tsm tsm;
 
+#define NRAINBOW 6
 typedef struct {
   const char *black, *brblack;
   const char *red, *brred;
   const char *green, *brgreen;
   const char *yellow, *bryellow;
   const char *blue, *brblue;
-  const char *magenta, *magenta;
+  const char *magenta, *brmagenta;
   const char *cyan, *brcyan;
   const char *white, *brwhite;
   char **slushclrs;
   const char *fg, *bg;
-  const char *cursorgf, *cursorbg;
+  const char *cursorfg, *cursorbg;
   const char *rcursorfg, *rcursorbg;
+  const char *rainbow[NRAINBOW];
 } Colorscheme;
 static const Colorscheme darksch = {
   .black     = "#15161e", .brblack   = "#414868",
@@ -90,12 +105,19 @@ static const Colorscheme darksch = {
   .magenta   = "#bb9af7", .brmagenta = "#bb9af7",
   .cyan      = "#7dcfff", .brcyan    = "#7dcfff",
   .white     = "#a9b1d6", .brwhite   = "#c0caf5",
-  .slushclrs = (void *)0;
+  .slushclrs = (void *)0,
   .fg        = "#c0caf5", .bg        = "#1a1b26",
   .cursorfg  = "#1a1b26", .cursorbg  = "#c0caf5",
   .rcursorfg = "#c0caf5", .rcursorbg = "#1a1b26",
+  .rainbow = {
+    "#f7768e",
+    "#e0af68",
+    "#9ece6a",
+    "#7dcfff",
+    "#7aa2f7",
+    "#bb9af7",
+  },
 };
-
 static const Colorscheme lightsch = {
   .black     = "#000000", .brblack   = "#444444",
   .red       = "#cc0000", .brred     = "#ef2929",
@@ -109,10 +131,23 @@ static const Colorscheme lightsch = {
   .fg        = "#000000", .bg        = "#6495ed",
   .cursorfg  = "#6495ed", .cursorbg  = "#000000",
   .rcursorfg = "#000000", .rcursorbg = "#6495ed",
+	.rainbow = {
+    "#cc0000",
+    "#c4a000",
+    "#4e9a06",
+    "#06989a",
+    "#3465a4",
+    "#75507b",
+	},
 };
-
 const Colorscheme *clrs;
-
+XftColor colorfg, colorbg;
+XftColor palette[16];
+XftColor cursorfgclr, cursorbgclr;
+XftColor cursorfgrev, cursorbgrev;
+XftColor throbpalette[NRAINBOW];
+double throbphase;
+int throbcsr;
 
 struct timespec thenr, nowr;
 long long elapsedr;
@@ -202,19 +237,37 @@ colorsinit() {
 
 void
 applycolors() {
+  int i;
+  const char *palstrs[16];
   static int inited = 0;
   if (inited) {
     XftColorFree(display, vis, cmap, &colorfg);
     XftColorFree(display, vis, cmap, &colorbg);
+    XftColorFree(display, vis, cmap, &cursorfgclr);
+    XftColorFree(display, vis, cmap, &cursorbgclr);
+    XftColorFree(display, vis, cmap, &cursorfgrev);
+    XftColorFree(display, vis, cmap, &cursorbgrev);
+    for (i = 0; i < 16; i++) { XftColorFree(display, vis, cmap, &palette[i]); }
+    for (i = 0; i < NRAINBOW; i++) { XftColorFree(display, vis, cmap, &throbpalette[i]); }
   }
   inited = 1;
-  if (isdark) {
-    clrs = &darksch;
-  } else {
-    clrs = &lightsch;
-  }
+  clrs = isdark ? &darksch : &lightsch;
+  palstrs[0] = clrs->black; palstrs[8] = clrs->brblack;
+  palstrs[1] = clrs->red; palstrs[9] = clrs->brred;
+  palstrs[2] = clrs->green; palstrs[10] = clrs->brgreen;
+  palstrs[3] = clrs->yellow; palstrs[11] = clrs->bryellow;
+  palstrs[4] = clrs->blue; palstrs[12] = clrs->brblue;
+  palstrs[5] = clrs->magenta; palstrs[13] = clrs->brmagenta;
+  palstrs[6] = clrs->cyan; palstrs[14] = clrs->brcyan;
+  palstrs[7] = clrs->white; palstrs[15] = clrs->brwhite;
+  for (i = 0; i < 16; i++) { XftColorAllocName(display, vis, cmap, palstrs[i], &palette[i]); }
+  for (i = 0; i < NRAINBOW; i++) { XftColorAllocName(display, vis, cmap, clrs->rainbow[i], &throbpalette[i]); }
   XftColorAllocName(display, vis, cmap, clrs->fg, &colorfg);
   XftColorAllocName(display, vis, cmap, clrs->bg, &colorbg);
+  XftColorAllocName(display, vis, cmap, clrs->cursorfg, &cursorfgclr);
+  XftColorAllocName(display, vis, cmap, clrs->cursorbg, &cursorbgclr);
+  XftColorAllocName(display, vis, cmap, clrs->rcursorbg, &cursorfgrev);
+  XftColorAllocName(display, vis, cmap, clrs->rcursorbg, &cursorbgrev);
 }
 
 static void
@@ -225,8 +278,15 @@ handlesigusr1(int sig) {
 
 void
 killcolors() {
+  int i;
   XftColorFree(display, vis, cmap, &colorfg);
   XftColorFree(display, vis, cmap, &colorbg);
+  XftColorFree(display, vis, cmap, &cursorfgclr);
+  XftColorFree(display, vis, cmap, &cursorbgclr);
+  XftColorFree(display, vis, cmap, &cursorbgrev);
+  XftColorFree(display, vis, cmap, &cursorbgrev);
+  for (i = 0 ; i < 16 ; i++) { XftColorFree(display, vis, cmap, &palette[i]); }
+  for (i = 0 ; i < NRAINBOW ; i++) { XftColorFree(display, vis, cmap, &throbpalette[i]); }
 }
 
 void
@@ -241,18 +301,47 @@ drawkill() {
   XFreePixmap(display, pixmap);
 }
 
+static void
+cellsetrow(Cell *cells, int n) {
+  int i;
+  for (i = 0 ; i < n ; i++) {
+    cells[i].ch = ' ';
+    cells[i].fg = CDEFAULT;
+    cells[i].bg = CDEFAULT;
+    cells[i].attrs = 0;
+  }
+}
+
+static XftColor *
+cellcolor(unsigned char idx, int isfg) {
+  if (idx == CDEFAULT) { return isfg ? &colorfg : &colorbg; }
+  if (idx < 16) { return &palette[idx]; }
+  return isfg ? &colorfg : &colorbg; /* TODO: 256-color fallback */
+}
+
+static void
+blendcolor(XftColor *dst, XftColor *a, XftColor *b, double t) {
+  dst->color.red = (unsigned short)(a->color.red * (1.0 - t) + b->color.red * t);
+	dst->color.green = (unsigned short)(a->color.green * (1.0 - t) + b->color.green * t);
+	dst->color.blue = (unsigned short)(a->color.blue * (1.0 - t) + b->color.blue * t);
+  dst->color.alpha = 0xffff; /* TODO: Blend transparencies */
+  dst->pixel = 0;
+}
+
 void
-drawcell(int col, int row, const char *str, size_t len,
-    XftColor *fg, XftColor *bg) {
+drawcell(int col, int row, Cell *cell, XftColor *fg, XftColor *bg) {
   int cw, ch, x, y;
   cw = font->max_advance_width;
   ch = font->ascent + font->descent;
   x = col * cw;
   y = row * ch;
-  XftDrawRect(xftdraw, bg, x, y, cw * (int)len, ch);
+  XftDrawRect(xftdraw, bg, x, y, cw, ch);
   XftDrawStringUtf8(xftdraw, fg, font,
       x, y + font->ascent,
-      (FcChar8 *)str, (int)len);
+      (FcChar8 *)&cell->ch, 1);
+  if (cell->attrs & ATTRUNDER) {
+    XftDrawRect(xftdraw, fg, x, y + ch - 1, cw, 1);
+  }
 }
 
 void
@@ -274,7 +363,10 @@ tbufclear(Termbuf *b) {
   int r, c;
   for (r = 0; r < TBUFROWS; r++) {
     for (c = 0; c < TBUFCOLS; c++) {
-      b->lines[r][c] = ' ';
+      b->lines[r][c].ch = ' ';
+      b->lines[r][c].fg = CDEFAULT;
+      b->lines[r][c].bg = CDEFAULT;
+      b->lines[r][c].attrs = 0;
     }
   }
   b->row = 0;
@@ -371,39 +463,41 @@ tsminit() {
   tsm.saverow = 0;
   tsm.priv = 0;
   tsm.curshape = 0; tsm.curblink = 0;
+  tsm.sgrfg = tsm.sgrbg = CDEFAULT;
+  tsm.sgrattrs = 0;
 }
 
 void
 tsmcsi(char z) {
   int p, q, r, c, i;
-  int t, b, nt, nm;
+  int t, b, nt, nm, v;
   if (tsm.hascurrent && tsm.nparams < TSMPARAMS) {
     tsm.params[tsm.nparams++] = tsm.crtparam;
   }
   p = tsm.nparams > 0 ? tsm.params[0] : 0;
   q = tsm.nparams > 1 ? tsm.params[1] : 0;
   switch (z) {
-    case 'A': /* cursor up */
+    case 'A':
       if (!p) { p = 1; }
       tbuf->row -= p;
       if (tbuf->row < tbuf->scroll) { tbuf->row = tbuf->scroll; }
       break;
-    case 'B': /* cursor down */
+    case 'B':
       if (!p) { p = 1; }
       tbuf->row += p;
       if (tbuf->row >= tbuf->scroll + visrows) { tbuf->row = tbuf->scroll + visrows - 1; }
       break;
-    case 'C': /* cursor right */
+    case 'C':
       if (!p) { p = 1; }
       tbuf->col += p;
       if (tbuf->col >= TBUFCOLS) { tbuf->col = TBUFCOLS - 1; }
       break;
-    case 'D': /* cursor left */
+    case 'D':
       if (!p) { p = 1; }
       tbuf->col -= p;
       if (tbuf->col < 0) { tbuf->col = 0; }
       break;
-    case 'H': case 'f': /* cursor to row/col (1-based) */
+    case 'H': case 'f':
       r = p ? p - 1 : 0;
       c = q ? q - 1 : 0;
       tbuf->row = tbuf->scroll + r;
@@ -411,34 +505,33 @@ tsmcsi(char z) {
       if (tbuf->row >= tbuf->scroll + visrows) { tbuf->row = tbuf->scroll + visrows - 1; }
       if (tbuf->col >= TBUFCOLS) { tbuf->col = TBUFCOLS - 1; }
       break;
-    case 'J': /* erase in display */
-      if (p == 0) { /* cursor to end */
-        memset(&tbuf->lines[tbuf->row][tbuf->col], ' ', TBUFCOLS - tbuf->col);
+    case 'J':
+      if (p == 0) {
+        cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], TBUFCOLS - tbuf->col);
         for (r = tbuf->row + 1; r < tbuf->scroll + visrows && r < TBUFROWS; r++) {
-          memset(tbuf->lines[r], ' ', TBUFCOLS);
+          cellsetrow(tbuf->lines[r], TBUFCOLS);
         }
-      } else if (p == 1) { /* start to cursor */
+      } else if (p == 1) {
         for (r = tbuf->scroll; r < tbuf->row && r < TBUFROWS; r++) {
-          memset(tbuf->lines[r], ' ', TBUFCOLS);
+          cellsetrow(tbuf->lines[r], TBUFCOLS);
         }
-        memset(tbuf->lines[r], ' ', tbuf->col + 1);
-      } else if (p == 2) { /* whole screen */
+        cellsetrow(tbuf->lines[r], tbuf->col + 1);
+      } else if (p == 2) {
         for (r = tbuf->scroll; r < tbuf->scroll + visrows && r < TBUFROWS; r++) {
-          memset(tbuf->lines[r], ' ', TBUFCOLS);
+          cellsetrow(tbuf->lines[r], TBUFCOLS);
         }
       }
       break;
-    case 'K': /* erase in line */
-      if (p == 0) { memset (&tbuf->lines[tbuf->row][tbuf->col], ' ', TBUFCOLS - tbuf->col); }
-      else if (p == 1) { memset(tbuf->lines[tbuf->row], ' ', tbuf->col + 1); }
-      else if (p == 2) { memset(tbuf->lines[tbuf->row], ' ', TBUFCOLS); }
+    case 'K':
+      if (p == 0) { cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], TBUFCOLS - tbuf->col); }
+      else if (p == 1) { cellsetrow(tbuf->lines[tbuf->row], tbuf->col + 1); }
+      else if (p == 2) { cellsetrow(tbuf->lines[tbuf->row], TBUFCOLS); }
       break;
     case 'h':
       if (tsm.priv) {
         for (i = 0; i < tsm.nparams; i++) {
           if (tsm.params[i] == 1049 && tbuf == &tbufs[0]) {
-            tbuf->svrow = tbuf->row;
-            tbuf->svcol = tbuf->col;
+            tbuf->svrow = tbuf->row; tbuf->svcol = tbuf->col;
             tbufclear(&tbufs[1]);
             tbuf = &tbufs[1];
           } else if (tsm.params[i] == 1) { tsm.appkeys = 1; }
@@ -450,72 +543,94 @@ tsmcsi(char z) {
         for (i = 0; i < tsm.nparams; i++) {
           if (tsm.params[i] == 1049 && tbuf == &tbufs[1]) {
             tbuf = &tbufs[0];
-            tbuf->row = tbuf->svrow;
-            tbuf->col = tbuf->svcol;
+            tbuf->row = tbuf->svrow; tbuf->col = tbuf->svcol;
           } else if (tsm.params[i] == 1) { tsm.appkeys = 0; }
         }
+      }
+      break;
+    case 'm':
+      /* SGR: no params = reset all */
+      if (tsm.nparams == 0) {
+        tsm.sgrfg = CDEFAULT; tsm.sgrbg = CDEFAULT; tsm.sgrattrs = 0;
+        break;
+      }
+      i = 0;
+      while (i < tsm.nparams) {
+        v = tsm.params[i];
+        if (v == 0)  { tsm.sgrfg = CDEFAULT; tsm.sgrbg = CDEFAULT; tsm.sgrattrs = 0; }
+        else if (v == 1) { tsm.sgrattrs |=  ATTRBOLD; }
+        else if (v == 2) { tsm.sgrattrs |=  ATTRDIM; }
+        else if (v == 3) { tsm.sgrattrs |=  ATTRITALIC; }
+        else if (v == 4) { tsm.sgrattrs |=  ATTRUNDER; }
+        else if (v == 7) { tsm.sgrattrs |=  ATTRREVERSE; }
+        else if (v == 22) { tsm.sgrattrs &= ~ATTRBOLD; }
+        else if (v == 23) { tsm.sgrattrs &= ~ATTRITALIC; }
+        else if (v == 24) { tsm.sgrattrs &= ~ATTRUNDER; }
+        else if (v == 27) { tsm.sgrattrs &= ~ATTRREVERSE; }
+        else if (v >= 30 && v <= 37) { tsm.sgrfg = v - 30; }
+        else if (v == 38 && i + 2 < tsm.nparams && tsm.params[i+1] == 5) {
+          tsm.sgrfg = (unsigned char)tsm.params[i+2]; i += 2;
+        }
+        else if (v == 39) { tsm.sgrfg = CDEFAULT; }
+        else if (v >= 40 && v <= 47) { tsm.sgrbg = v - 40; }
+        else if (v == 48 && i + 2 < tsm.nparams && tsm.params[i+1] == 5) {
+          tsm.sgrbg = (unsigned char)tsm.params[i+2]; i += 2;
+        }
+        else if (v == 49) { tsm.sgrbg = CDEFAULT; }
+        else if (v >= 90 && v <= 97) { tsm.sgrfg = v - 90 + 8; }
+        else if (v >= 100 && v <= 107) { tsm.sgrbg = v - 100 + 8; }
+        i++;
       }
       break;
     case 'q':
       if (tsm.priv) {
         tsm.curblink = (p == 0 || p == 1 || p == 3 || p == 5);
-        if (p <= 2) { tsm.curshape = 0; } /* block */
-        else if (p <= 4) { tsm.curshape = 1; } /* underline */
-        else { tsm.curshape = 2; } /* bar */
+        if (p <= 2) { tsm.curshape = 0; }
+        else if (p <= 4) { tsm.curshape = 1; }
+        else { tsm.curshape = 2; }
       }
       break;
-    case 'r': /* set scrolling region */
-      tbuf->scrolltop = p ? p-1 : 0;
-      tbuf->scrollbot = q ? q-1 : visrows - 1;
-      /* clamp to 2-row region and ensure within screen */
+    case 'r':
+      tbuf->scrolltop = p ? p - 1 : 0;
+      tbuf->scrollbot = q ? q - 1 : visrows - 1;
       if (tbuf->scrollbot >= visrows) { tbuf->scrollbot = visrows - 1; }
       if (tbuf->scrolltop >= tbuf->scrollbot) { tbuf->scrolltop = 0; tbuf->scrollbot = visrows - 1; }
       tbuf->row = tbuf->scroll + tbuf->scrolltop;
       tbuf->col = 0;
       break;
-    case 'L': /* insert lines, push lines at cursor down */
+    case 'L':
       if (!p) { p = 1; }
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nt = tbuf->row;
       nm = b - nt - p + 1;
-      if (nm > 0) {
-        memmove(tbuf->lines[nt + p], tbuf->lines[nt],
-            nm * TBUFCOLS);
-      }
-      for (r = nt; r < nt + p && r <= b; r++) {
-        memset(tbuf->lines[r], ' ', TBUFCOLS);
-      }
+      if (nm > 0) { memmove(tbuf->lines[nt + p], tbuf->lines[nt], nm * sizeof(tbuf->lines[0])); }
+      for (r = nt; r < nt + p && r <= b; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
-    case 'M': /* delete lines, pull lines up to cursor */
+    case 'M':
       if (!p) { p = 1; }
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nt = tbuf->row;
       nm = b - nt - p + 1;
-      if (nm > 0) {
-        memmove(tbuf->lines[nt], tbuf->lines[nt + p],
-            nm * TBUFCOLS);
-      }
-      for (r = b - p + 1; r <= b; r++) {
-        memset(tbuf->lines[r], ' ', TBUFCOLS);
-      }
+      if (nm > 0) { memmove(tbuf->lines[nt], tbuf->lines[nt + p], nm * sizeof(tbuf->lines[0])); }
+      for (r = b - p + 1; r <= b; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
-    case 'S': /* scroll up, shift region by p */
+    case 'S':
       if (!p) { p = 1; }
       t = tbuf->scroll + tbuf->scrolltop;
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nm = b - t - p + 1;
-      if (nm > 0) { memmove(tbuf->lines[t], tbuf->lines[t+p], nm * TBUFCOLS); }
-      for (r = b - p + 1; r <= b; r++) { memset(tbuf->lines[r], ' ', TBUFCOLS); }
+      if (nm > 0) { memmove(tbuf->lines[t], tbuf->lines[t + p], nm * sizeof(tbuf->lines[0])); }
+      for (r = b - p + 1; r <= b; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
-    case 'T': /* scroll down, shift region by p */
+    case 'T':
       if (!p) { p = 1; }
       t = tbuf->scroll + tbuf->scrolltop;
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nm = b - t - p + 1;
-      if (nm > 0) { memmove(tbuf->lines[t+p], tbuf->lines[t], nm * TBUFCOLS); }
-      for (r = t; r < t + p; r++) { memset(tbuf->lines[r], ' ', TBUFCOLS); }
+      if (nm > 0) { memmove(tbuf->lines[t + p], tbuf->lines[t], nm * sizeof(tbuf->lines[0])); }
+      for (r = t; r < t + p; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
-    default: /* SGR (m), mode set/reset (h/l), and miscellaneous */
+    default:
       break;
   }
 }
@@ -526,8 +641,8 @@ tbufindex() {
   top = tbuf->scroll + tbuf->scrolltop;
   bot = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
   if (tbuf->row == bot) {
-    memmove(tbuf->lines[top], tbuf->lines[top+1], (bot - top) * TBUFCOLS);
-    memset(tbuf->lines[bot], ' ', TBUFCOLS);
+    memmove(tbuf->lines[top], tbuf->lines[top + 1], (bot - top) * sizeof(tbuf->lines[0]));
+    cellsetrow(tbuf->lines[bot], TBUFCOLS);
   } else {
     if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
     if (!tbuf->scrollbot && tbuf->row >= tbuf->scroll + visrows) {
@@ -542,9 +657,11 @@ tbufrevindex () {
   top = tbuf->scroll + tbuf->scrolltop;
   bot = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
   if (tbuf->row == top) {
-    memmove(tbuf->lines[top+1], tbuf->lines[top], (bot - top) * TBUFCOLS);
-    memset(tbuf->lines[top], ' ', TBUFCOLS);
-  } else { if (tbuf->row > tbuf->scroll) { tbuf->row--; }}
+    memmove(tbuf->lines[top + 1], tbuf->lines[top], (bot - top) * sizeof(tbuf->lines[0]));
+    cellsetrow(tbuf->lines[top], TBUFCOLS);
+  } else {
+    if (tbuf->row > tbuf->scroll) { tbuf->row--; }
+  }
 }
 
 void
@@ -564,7 +681,10 @@ tsmproc(char c) {
       else if (uc == '\n') { tbufindex(); }
       else if (uc >= 0x20 && uc < 0x7F) {
         if (tbuf->col < TBUFCOLS - 1) {
-          tbuf->lines[tbuf->row][tbuf->col] = c;
+          tbuf->lines[tbuf->row][tbuf->col].ch = c;
+          tbuf->lines[tbuf->row][tbuf->col].fg = tsm.sgrfg;
+          tbuf->lines[tbuf->row][tbuf->col].bg = tsm.sgrbg;
+          tbuf->lines[tbuf->row][tbuf->col].attrs = tsm.sgrattrs;
           tbuf->col++;
           if (tbuf->row >= tbuf->scroll + visrows) {
             tbuf->scroll = tbuf->row - visrows + 1;
@@ -653,14 +773,17 @@ int
 main(int argc, char *argv[]) {
   XEvent ev;
   int quit, xfd, r, len, maxscroll, darkth, sel;
-  int cw, ch, cx, cy, crow, ccol;
+  int cw, ch, cx, cy, crow, ccol, reverse, cidx;
   fd_set fds;
   struct timeval tv;
   long long remaining;
   char buf[8];
   KeySym ks;
-  toggletheme = 0;
+  Cell *curcell;
+  double segf, tpos, bright;
+  XftColor *cfg, *cbg, throb;
   darkth = detectdark();
+  toggletheme = 0;
   if (darkth < 0) {
     fprintf(stderr, "Error when reading theme files!\n");
   } else if (darkth) { isdark = 1; } else { isdark = 0; }
@@ -675,7 +798,9 @@ main(int argc, char *argv[]) {
   ptyresize();
   UNUSED(argc); UNUSED(argv);
   visrows = WHEIGHT / (font->ascent + font->descent);
+  viscols = WWIDTH / font->max_advance_width;
   quit = 0;
+  throbcsr = 1;
   GETNS(thenr); GETNS(nowr);
   while (!quit) {
     if (toggletheme) {
@@ -692,6 +817,7 @@ main(int argc, char *argv[]) {
             WWIDTH = ev.xconfigure.width;
             WHEIGHT = ev.xconfigure.height;
             visrows = WHEIGHT / (font->ascent + font->descent);
+            viscols = WWIDTH / font->max_advance_width;
             drawresize();
             ptyresize();
           }
@@ -787,7 +913,15 @@ main(int argc, char *argv[]) {
       GETNS(thenr);
       XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
       for (r = 0; r < visrows && (tbuf->scroll + r) < TBUFROWS; r++) {
-        drawcell(0, r, tbuf->lines[tbuf->scroll + r], TBUFCOLS, &colorfg, &colorbg);
+        int col;
+        for (col = 0; col < viscols; col++) {
+          Cell *cell = &tbuf->lines[tbuf->scroll + r][col];
+          XftColor *fg, *bg;
+          fg = cellcolor(cell->fg, 1);
+          bg = cellcolor(cell->bg, 0);
+          if (cell->attrs & ATTRREVERSE) { XftColor *tmp = fg; fg = bg; bg = tmp; }
+          drawcell(col, r, cell, fg, bg);
+        }
       }
       cw = font->max_advance_width;
       ch = font->ascent + font->descent;
@@ -796,14 +930,35 @@ main(int argc, char *argv[]) {
       cx = ccol * cw;
       cy = crow * ch;
       if (crow >= 0 && crow < visrows) {
-        if (tsm.curshape == 1) { /* underline */
-          XftDrawRect(xftdraw, &colorfg, cx, cy+ch - 2, cw, 2);
-        } else if (tsm.curshape == 2) { /* bar */
-          XftDrawRect(xftdraw, &colorfg, cx, cy, 2, ch);
-        } else { /* block, needs inverting */
-          drawcell(ccol, crow,
-              &tbuf->lines[tbuf->row][ccol], 1,
-              &colorbg, &colorfg);
+        curcell = &tbuf->lines[tbuf->row][ccol];
+        reverse = curcell->attrs & ATTRREVERSE;
+        if (throbcsr) {
+          throbphase += 1.0/180.0;
+          if (throbphase >= 1.0) { throbphase -= 1.0; }
+          segf = throbphase * NRAINBOW;
+          cidx = ((int)segf % NRAINBOW);
+          tpos = segf - (int)segf;
+          bright = 0.5 + 0.5 * sin(tpos * 2.0 * M_PI);
+          blendcolor(&throb, &colorbg, &throbpalette[cidx], bright);
+          cfg = &colorfg;
+          cbg = &throb;
+          if (tsm.curshape == 1) {
+            XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, cw, 2);
+          } else if (tsm.curshape == 2) {
+            XftDrawRect(xftdraw, cbg, cx, cy, 2, ch);
+          } else {
+            drawcell(ccol, crow, curcell, cfg, cbg);
+          }
+        } else {
+          cfg = reverse ? &cursorfgrev : &cursorfgclr;
+          cbg = reverse ? &cursorbgrev : &cursorbgclr;
+          if (tsm.curshape == 1) {
+            XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, cw, 2);
+          } else if (tsm.curshape == 2) {
+            XftDrawRect(xftdraw, cbg, cx, cy, 2, ch);
+          } else {
+            drawcell(ccol, crow, curcell, cfg, cbg);
+          }
         }
       }
       drawflush();
