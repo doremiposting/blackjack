@@ -51,7 +51,7 @@ typedef struct {
   Cell lines[TBUFROWS][TBUFCOLS];
   int col, row;
   int scroll;
-  int svrow, svcol;
+  int svrow, svcol, svscroll;
   int scrolltop, scrollbot;
 } Termbuf;
 Termbuf tbufs[2];
@@ -97,18 +97,18 @@ typedef struct {
   const char *rainbow[NRAINBOW];
 } Colorscheme;
 static const Colorscheme darksch = {
-  .black     = "#15161e", .brblack   = "#414868",
-  .red       = "#f7768e", .brred     = "#f7768e",
-  .green     = "#9ece6a", .brgreen   = "#9ece6a",
-  .yellow    = "#e0af68", .bryellow  = "#e0af68",
-  .blue      = "#7aa2f7", .brblue    = "#7aa2f7",
-  .magenta   = "#bb9af7", .brmagenta = "#bb9af7",
-  .cyan      = "#7dcfff", .brcyan    = "#7dcfff",
-  .white     = "#a9b1d6", .brwhite   = "#c0caf5",
+  .black     = "#282c34", .brblack   = "#545862",
+  .red       = "#e06c75", .brred     = "#e06c75",
+  .green     = "#98c379", .brgreen   = "#98c379",
+  .yellow    = "#e5c07b", .bryellow  = "#e5c07b",
+  .blue      = "#61afef", .brblue    = "#61afef",
+  .magenta   = "#c678dd", .brmagenta = "#c678dd",
+  .cyan      = "#56b6c2", .brcyan    = "#56b6c2",
+  .white     = "#abb2bf", .brwhite   = "#c8ccd4",
   .slushclrs = (void *)0,
-  .fg        = "#c0caf5", .bg        = "#1a1b26",
-  .cursorfg  = "#1a1b26", .cursorbg  = "#c0caf5",
-  .rcursorfg = "#c0caf5", .rcursorbg = "#1a1b26",
+  .fg        = "#abb2bf", .bg        = "#282c34",
+  .cursorfg  = "#282c34", .cursorbg  = "#abb2bf",
+  .rcursorfg = "#abb2bf", .rcursorbg = "#282c34",
   .rainbow = {
     "#f7768e",
     "#e0af68",
@@ -119,18 +119,18 @@ static const Colorscheme darksch = {
   },
 };
 static const Colorscheme lightsch = {
-  .black     = "#000000", .brblack   = "#444444",
-  .red       = "#cc0000", .brred     = "#ef2929",
-  .green     = "#4e9a06", .brgreen   = "#8ae234",
-  .yellow    = "#c4a000", .bryellow  = "#fce94f",
-  .blue      = "#3465a4", .brblue    = "#729fcf",
-  .magenta   = "#75507b", .brmagenta = "#ad7fa8",
-  .cyan      = "#06989a", .brcyan    = "#34e2e2",
-  .white     = "#d3d7cf", .brwhite   = "#eeeeec",
+  .black     = "#000000", .brblack   = "#8e908c",
+  .red       = "#c82829", .brred     = "#ff3334",
+  .green     = "#718c00", .brgreen   = "#9ec400",
+  .yellow    = "#f5871f", .bryellow  = "#eab700",
+  .blue      = "#4271ae", .brblue    = "#5795e6",
+  .magenta   = "#8959a8", .brmagenta = "#b777e0",
+  .cyan      = "#3e999f", .brcyan    = "#54ced6",
+  .white     = "#d6d6d6", .brwhite   = "#efefef",
   .slushclrs = (void *)0,
-  .fg        = "#000000", .bg        = "#6495ed",
-  .cursorfg  = "#6495ed", .cursorbg  = "#000000",
-  .rcursorfg = "#000000", .rcursorbg = "#6495ed",
+  .fg        = "#4d4d4d", .bg        = "#ffffff",
+  .cursorfg  = "#000000", .cursorbg  = "#d6d6d6",
+  .rcursorfg = "#d6d6d6", .rcursorbg = "#000000",
 	.rainbow = {
     "#cc0000",
     "#c4a000",
@@ -266,7 +266,7 @@ applycolors() {
   XftColorAllocName(display, vis, cmap, clrs->bg, &colorbg);
   XftColorAllocName(display, vis, cmap, clrs->cursorfg, &cursorfgclr);
   XftColorAllocName(display, vis, cmap, clrs->cursorbg, &cursorbgclr);
-  XftColorAllocName(display, vis, cmap, clrs->rcursorbg, &cursorfgrev);
+  XftColorAllocName(display, vis, cmap, clrs->rcursorfg, &cursorfgrev);
   XftColorAllocName(display, vis, cmap, clrs->rcursorbg, &cursorbgrev);
 }
 
@@ -283,7 +283,7 @@ killcolors() {
   XftColorFree(display, vis, cmap, &colorbg);
   XftColorFree(display, vis, cmap, &cursorfgclr);
   XftColorFree(display, vis, cmap, &cursorbgclr);
-  XftColorFree(display, vis, cmap, &cursorbgrev);
+  XftColorFree(display, vis, cmap, &cursorfgrev);
   XftColorFree(display, vis, cmap, &cursorbgrev);
   for (i = 0 ; i < 16 ; i++) { XftColorFree(display, vis, cmap, &palette[i]); }
   for (i = 0 ; i < NRAINBOW ; i++) { XftColorFree(display, vis, cmap, &throbpalette[i]); }
@@ -383,6 +383,9 @@ tbufinit() {
   tbufclear(&tbufs[0]);
   tbufclear(&tbufs[1]);
   tbuf = &tbufs[0];
+  tsm.sgrfg = CDEFAULT;
+  tsm.sgrbg = CDEFAULT;
+  tsm.sgrattrs = 0;
 }
 
 
@@ -497,6 +500,28 @@ tsmcsi(char z) {
       tbuf->col -= p;
       if (tbuf->col < 0) { tbuf->col = 0; }
       break;
+    case 'G': case '`': /* Cursor Horizontal Absolute */
+      c = p ? p - 1 : 0;
+      tbuf->col = c;
+      if (tbuf->col >= TBUFCOLS) { tbuf->col = TBUFCOLS - 1; }
+      break;
+    case 'd': /* Line Position Absolute */
+      r = p ? p - 1 : 0;
+      tbuf->row = tbuf->scroll + r;
+      if (tbuf->row >= tbuf->scroll + visrows) { tbuf->row = tbuf->scroll + visrows - 1; }
+      break;
+    case 'E': /* Cursor Next Line */
+      if (!p) { p = 1; }
+      tbuf->row += p;
+      if (tbuf->row >= tbuf->scroll + visrows) { tbuf->row = tbuf->scroll + visrows - 1; }
+      tbuf->col = 0;
+      break;
+    case 'F': /* Cursor Preceding Line */
+      if (!p) { p = 1; }
+      tbuf->row -= p;
+      if (tbuf->row < tbuf->scroll) { tbuf->row = tbuf->scroll; }
+      tbuf->col = 0;
+      break;
     case 'H': case 'f':
       r = p ? p - 1 : 0;
       c = q ? q - 1 : 0;
@@ -527,11 +552,35 @@ tsmcsi(char z) {
       else if (p == 1) { cellsetrow(tbuf->lines[tbuf->row], tbuf->col + 1); }
       else if (p == 2) { cellsetrow(tbuf->lines[tbuf->row], TBUFCOLS); }
       break;
+    case 'P': /* Delete Character */
+      if (!p) { p = 1; }
+      if (p > TBUFCOLS - tbuf->col) { p = TBUFCOLS - tbuf->col; }
+      nm = TBUFCOLS - tbuf->col - p;
+      if (nm > 0) {
+        memmove(&tbuf->lines[tbuf->row][tbuf->col], &tbuf->lines[tbuf->row][tbuf->col + p], nm * sizeof(tbuf->lines[0][0])); 
+      }
+      cellsetrow(&tbuf->lines[tbuf->row][TBUFCOLS - p], p);
+      break;
+    case 'X': /* Erase Character */
+      if (!p) { p = 1; }
+      if (p > TBUFCOLS - tbuf->col) { p = TBUFCOLS - tbuf->col; }
+      cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], p);
+      break;
+    case '@': /* Insert Character */
+      if (!p) { p = 1; }
+      if (p > TBUFCOLS - tbuf->col) { p = TBUFCOLS - tbuf->col; }
+      nm = TBUFCOLS - tbuf->col - p;
+      if (nm > 0) {
+        memmove(&tbuf->lines[tbuf->row][tbuf->col + p], &tbuf->lines[tbuf->row][tbuf->col], nm * sizeof(tbuf->lines[0][0])); 
+      }
+      cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], p);
+      break;
     case 'h':
       if (tsm.priv) {
         for (i = 0; i < tsm.nparams; i++) {
           if (tsm.params[i] == 1049 && tbuf == &tbufs[0]) {
             tbuf->svrow = tbuf->row; tbuf->svcol = tbuf->col;
+            tbuf->svscroll = tbuf->scroll;
             tbufclear(&tbufs[1]);
             tbuf = &tbufs[1];
           } else if (tsm.params[i] == 1) { tsm.appkeys = 1; }
@@ -544,6 +593,7 @@ tsmcsi(char z) {
           if (tsm.params[i] == 1049 && tbuf == &tbufs[1]) {
             tbuf = &tbufs[0];
             tbuf->row = tbuf->svrow; tbuf->col = tbuf->svcol;
+            tbuf->scroll = tbuf->svscroll;
           } else if (tsm.params[i] == 1) { tsm.appkeys = 0; }
         }
       }
@@ -629,6 +679,14 @@ tsmcsi(char z) {
       nm = b - t - p + 1;
       if (nm > 0) { memmove(tbuf->lines[t + p], tbuf->lines[t], nm * sizeof(tbuf->lines[0])); }
       for (r = t; r < t + p; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
+      break;
+    case 's': /* Save cursor */
+      tsm.savecol = tbuf->col;
+      tsm.saverow = tbuf->row;
+      break;
+    case 'u': /* Restore cursor */
+      tbuf->col = tsm.savecol;
+      tbuf->row = tsm.saverow;
       break;
     default:
       break;
