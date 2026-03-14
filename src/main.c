@@ -14,6 +14,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xft/Xft.h>
+#include <X11/Xatom.h>
 
 #include "main.h"
 
@@ -32,6 +33,10 @@ pid_t ptypid;
 int visrows, viscols;
 volatile sig_atomic_t toggletheme;
 int isdark;
+int fontsize;
+Atom xaclipboard, xautf8str, xatargets, xaseldata;
+char *cliptext;
+size_t cliptextsz;
 
 #define TBUFCOLS 256
 /* #define TBUFROWS 128 */
@@ -203,6 +208,10 @@ x11init() {
   XGetWindowAttributes(display, window, &wa);
   gc = XCreateGC(display, window, 0, NULL);
   wmdelwin = XInternAtom(display, "WM_DELETE_WINDOW", false);
+  xaclipboard = XInternAtom(display, "CLIPBOARD", false);
+  xautf8str = XInternAtom(display, "UTF8_STRING", false);
+  xatargets = XInternAtom(display, "TARGETS", false);
+  xaseldata = XInternAtom(display, "XSEL_DATA", false);
   XSetWMProtocols(display, window, &wmdelwin, 1);
   XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask);
   XStoreName(display, window, "bj");
@@ -217,14 +226,47 @@ x11kill() {
 
 void
 fontinit() {
+  char fontspec[128];
   /* TODO: Pull font name out into config.h */
-  font = XftFontOpenName(display, DefaultScreen(display), "monospace:size=13");
+  snprintf(fontspec, sizeof(fontspec), "monospace:size=%d", fontsize);
+  font = XftFontOpenName(display, DefaultScreen(display), fontspec);
   if (!font) { fprintf(stderr, "ERROR: Couldn't open font!\n"); exit(1); }
 }
 
 void
 fontkill() {
   XftFontClose(display, font);
+}
+
+void drawresize();
+void ptyresize();
+
+void
+changefontsz(int delta) {
+  fontkill();
+  fontsize += delta;
+  if (fontsize < 6) { fontsize = 6; }
+  if (fontsize > 72) { fontsize = 72; }
+  fontinit();
+  visrows = WHEIGHT / (font->ascent + font->descent);
+  viscols = WWIDTH / font->max_advance_width;
+  drawresize();
+  ptyresize();
+}
+
+void
+clipcopy(const char *text, int len) {
+  free(cliptext);
+  cliptext = malloc(len);
+  if (!cliptext) { cliptextsz = 0; return; }
+  memcpy(cliptext, text, len);
+  cliptextsz = len;
+  XSetSelectionOwner(display, xaclipboard, window, CurrentTime);
+}
+
+void
+clippaste(Time time) {
+  XConvertSelection(display, xaclipboard, xautf8str, xaseldata, window, time);
 }
 
 void applycolors();
@@ -829,7 +871,7 @@ tsmproc(char c) {
 
 int
 main(int argc, char *argv[]) {
-  XEvent ev;
+  XEvent ev, reply;
   int quit, xfd, r, len, maxscroll, darkth, sel;
   int cw, ch, cx, cy, crow, ccol, reverse, cidx;
   fd_set fds;
@@ -840,8 +882,14 @@ main(int argc, char *argv[]) {
   Cell *curcell;
   double segf, tpos, bright;
   XftColor *cfg, *cbg, throb;
+  XSelectionRequestEvent *rq;
+  Atom supported[2], type;
+  int fmt;
+  unsigned long ni, after;
+  unsigned char *data;
   darkth = detectdark();
   toggletheme = 0;
+  fontsize = 13;
   if (darkth < 0) {
     fprintf(stderr, "Error when reading theme files!\n");
   } else if (darkth) { isdark = 1; } else { isdark = 0; }
@@ -880,6 +928,39 @@ main(int argc, char *argv[]) {
             ptyresize();
           }
           break;
+        case SelectionRequest:
+          rq = &ev.xselectionrequest;
+          reply.xselection.type = SelectionNotify;
+          reply.xselection.display = rq->display;
+          reply.xselection.requestor = rq->requestor;
+          reply.xselection.selection = rq->selection;
+          reply.xselection.target = rq->target;
+          reply.xselection.time = rq->time;
+          reply.xselection.property = None; /* default: refuse */
+          if (rq->target == xatargets) {
+            supported[0] = xautf8str;
+            supported[1] = XA_STRING;
+            XChangeProperty(rq->display, rq->requestor, rq->property,
+                XA_ATOM, 32, PropModeReplace,
+                (unsigned char *)supported, 2);
+          } else if ((rq->target == xautf8str || rq->target == XA_STRING)
+                    && cliptext && cliptextsz > 0) {
+            XChangeProperty(rq->display, rq->requestor, rq->property,
+                rq->target, 8, PropModeReplace,
+                (unsigned char *) cliptext, cliptextsz);
+            reply.xselection.property = rq->property;
+          }
+          XSendEvent(rq->display, rq->requestor, false, 0, &reply);
+          break;
+        case SelectionNotify:
+          if (ev.xselection.property == None) { break; }
+          if (XGetWindowProperty(display, window, xaseldata,
+              0, (1 << 20), true, AnyPropertyType,
+              &type, &fmt, &ni, &after, &data) == Success && data) {
+            write(ptyfd, data, (int)ni);
+            XFree(data);
+          }
+          break;
         case KeyPress: {
             len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
             if (ks == XK_Prior) {
@@ -916,6 +997,14 @@ main(int argc, char *argv[]) {
               write(ptyfd, "\033[3~", 4);
             } else if (ks == XK_Insert) {
               write(ptyfd, "\033[2~", 4);
+            }
+            else if (ev.xkey.state & Mod1Mask) {
+              if (ev.xkey.state & ShiftMask) {
+                if (ks == XK_j || ks == XK_J) { changefontsz(-1); }
+                else if (ks == XK_k || ks == XK_K) { changefontsz(+1); }
+              }
+              else if (ks == XK_c) { /* TODO: Wire to selection */ clipcopy("", 0); }
+              else if (ks == XK_v) { clippaste(ev.xkey.time); }
             }
             else if (ks == XK_F1) { write(ptyfd, "\033OP", 3); }
             else if (ks == XK_F2) { write(ptyfd, "\033OQ", 3); }
