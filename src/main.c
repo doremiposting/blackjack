@@ -780,15 +780,16 @@ tsmproc(char c) {
       else if (uc == '\r') { tbuf->col = 0; }
       else if (uc == '\n') { tbufindex(); }
       else if (uc >= 0x20 && uc < 0x7F) {
-        if (tbuf->col < TBUFCOLS - 1) {
-          tbuf->lines[tbuf->row][tbuf->col].ch = c;
-          tbuf->lines[tbuf->row][tbuf->col].fg = tsm.sgrfg;
-          tbuf->lines[tbuf->row][tbuf->col].bg = tsm.sgrbg;
-          tbuf->lines[tbuf->row][tbuf->col].attrs = tsm.sgrattrs;
-          tbuf->col++;
-          if (tbuf->row >= tbuf->scroll + visrows) {
-            tbuf->scroll = tbuf->row - visrows + 1;
-          }
+        if (tbuf ->col >= viscols) {
+          tbuf->col = 0; tbufindex();
+        }
+        tbuf->lines[tbuf->row][tbuf->col].ch = c;
+        tbuf->lines[tbuf->row][tbuf->col].fg = tsm.sgrfg;
+        tbuf->lines[tbuf->row][tbuf->col].bg = tsm.sgrbg;
+        tbuf->lines[tbuf->row][tbuf->col].attrs = tsm.sgrattrs;
+        tbuf->col++;
+        if (tbuf->row >= tbuf->scroll + visrows) {
+          tbuf->scroll = tbuf->row - visrows + 1;
         }
       }
       break;
