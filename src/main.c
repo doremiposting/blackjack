@@ -904,8 +904,8 @@ main(int argc, char *argv[]) {
   ptyinit();
   ptyresize();
   UNUSED(argc); UNUSED(argv);
-  visrows = WHEIGHT / (font->ascent + font->descent);
-  viscols = WWIDTH / font->max_advance_width;
+  visrows = (int)WHEIGHT / (font->ascent + font->descent);
+  viscols = (int)WWIDTH / font->max_advance_width;
   quit = 0;
   throbcsr = 1;
   GETNS(thenr); GETNS(nowr);
@@ -921,10 +921,10 @@ main(int argc, char *argv[]) {
         case ConfigureNotify:
           if (ev.xconfigure.width != (int)WWIDTH ||
               ev.xconfigure.height != (int)WHEIGHT) {
-            WWIDTH = ev.xconfigure.width;
-            WHEIGHT = ev.xconfigure.height;
-            visrows = WHEIGHT / (font->ascent + font->descent);
-            viscols = WWIDTH / font->max_advance_width;
+            WWIDTH = (unsigned int)ev.xconfigure.width;
+            WHEIGHT = (unsigned int)ev.xconfigure.height;
+            visrows = (int)WHEIGHT / (font->ascent + font->descent);
+            viscols = (int)WWIDTH / font->max_advance_width;
             drawresize();
             ptyresize();
           }
@@ -948,7 +948,7 @@ main(int argc, char *argv[]) {
                     && cliptext && cliptextsz > 0) {
             XChangeProperty(rq->display, rq->requestor, rq->property,
                 rq->target, 8, PropModeReplace,
-                (unsigned char *) cliptext, cliptextsz);
+                (unsigned char *) cliptext, (int)cliptextsz);
             reply.xselection.property = rq->property;
           }
           XSendEvent(rq->display, rq->requestor, false, 0, &reply);
@@ -958,7 +958,7 @@ main(int argc, char *argv[]) {
           if (XGetWindowProperty(display, window, xaseldata,
               0, (1 << 20), true, AnyPropertyType,
               &type, &fmt, &ni, &after, &data) == Success && data) {
-            write(ptyfd, data, (int)ni);
+            write(ptyfd, data, (size_t)ni);
             XFree(data);
           }
           break;
@@ -1003,6 +1003,10 @@ main(int argc, char *argv[]) {
               if (ev.xkey.state & ShiftMask) {
                 if (ks == XK_j || ks == XK_J) { changefontsz(-1); }
                 else if (ks == XK_k || ks == XK_K) { changefontsz(+1); }
+                else if (ks == XK_t || ks == XK_T) {
+                  throbcsr = !throbcsr;
+                  if (throbcsr) { throbphase = 0.0; }
+                }
               }
               else if (ks == XK_c) { /* TODO: Wire to selection */ clipcopy("", 0); }
               else if (ks == XK_v) { clippaste(ev.xkey.time); }
@@ -1020,7 +1024,7 @@ main(int argc, char *argv[]) {
             else if (ks == XK_F11) { write(ptyfd, "\033[23~", 5); }
             else if (ks == XK_F12) { write(ptyfd, "\033[24~", 5); }
             else if (len > 0) {
-              write(ptyfd, buf, len);
+              write(ptyfd, buf, (size_t)len);
             }
           }
           break;
@@ -1091,9 +1095,9 @@ main(int argc, char *argv[]) {
           cfg = &colorfg;
           cbg = &throb;
           if (tsm.curshape == 1) {
-            XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, cw, 2);
+            XftDrawRect(xftdraw, cbg, cx, (int)(cy + ch - 2), (unsigned int)cw, 2);
           } else if (tsm.curshape == 2) {
-            XftDrawRect(xftdraw, cbg, cx, cy, 2, ch);
+            XftDrawRect(xftdraw, cbg, cx, cy, 2, (unsigned int)ch);
           } else {
             drawcell(ccol, crow, curcell, cfg, cbg);
           }
@@ -1101,9 +1105,9 @@ main(int argc, char *argv[]) {
           cfg = reverse ? &cursorfgrev : &cursorfgclr;
           cbg = reverse ? &cursorbgrev : &cursorbgclr;
           if (tsm.curshape == 1) {
-            XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, cw, 2);
+            XftDrawRect(xftdraw, cbg, cx, (int)(cy + ch - 2), (unsigned int)cw, 2);
           } else if (tsm.curshape == 2) {
-            XftDrawRect(xftdraw, cbg, cx, cy, 2, ch);
+            XftDrawRect(xftdraw, cbg, cx, cy, 2, (unsigned int)ch);
           } else {
             drawcell(ccol, crow, curcell, cfg, cbg);
           }

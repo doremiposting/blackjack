@@ -30,20 +30,30 @@ compilefile(const char *fn, const char *out) {
 
 int
 main(int argc, char *argv[]) {
+  int release;
 	GO_REBUILD_URSELF(argc, argv); 
 
   if (!mkdir_if_not_exists("./build/")) { return 1; }
+
+  if (argc > 1) {
+    if (!(strncmp(argv[1], "release", 8*sizeof(char)))) {
+      release = 1;
+    }
+  }
 
   boilerplate();
   cmd_append(&cmd, "-I/usr/include/freetype2");
   cmd_append(&cmd, "-lX11", "-lXft");
   cmd_append(&cmd, "-lm");
   cmd_append(&cmd, "-D_GNU_SOURCE");
+  if (release) { cmd_append(&cmd, "-O2"); }
+  else { cmd_append(&cmd, "-g"); }
   compilefile("src/main.c", "build/main.o");
 
 
-	cmd_append(&cmd, CC, "-g", "-fPIE", "-pie", "-o", "bj",
+	cmd_append(&cmd, CC, "-fPIE", "-pie", "-o", "bj",
     "-lX11", "-L/opt/X11/lib/", "-lXft", "-lm",
     "build/main.o");
+  if (!release) { cmd_append(&cmd, "-g"); }
 	if (!cmd_run(&cmd)) { return 1; }
 }
