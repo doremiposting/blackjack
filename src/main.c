@@ -485,7 +485,7 @@ int
 ptyread() {
   char buf[256];
   int i, n;
-  n = read(ptyfd, buf, sizeof(buf));
+  n = (int)read(ptyfd, buf, sizeof(buf));
   if (n < 0 && errno == EIO) { return -1; }
   if (n <= 0) { return 0; }
   for (i = 0; i < n; i++) { tsmproc(buf[i]); }
@@ -599,7 +599,7 @@ tsmcsi(char z) {
       if (p > TBUFCOLS - tbuf->col) { p = TBUFCOLS - tbuf->col; }
       nm = TBUFCOLS - tbuf->col - p;
       if (nm > 0) {
-        memmove(&tbuf->lines[tbuf->row][tbuf->col], &tbuf->lines[tbuf->row][tbuf->col + p], nm * sizeof(tbuf->lines[0][0])); 
+        memmove(&tbuf->lines[tbuf->row][tbuf->col], &tbuf->lines[tbuf->row][tbuf->col + p], (long unsigned int)(nm) * sizeof(tbuf->lines[0][0])); 
       }
       cellsetrow(&tbuf->lines[tbuf->row][TBUFCOLS - p], p);
       break;
@@ -613,7 +613,7 @@ tsmcsi(char z) {
       if (p > TBUFCOLS - tbuf->col) { p = TBUFCOLS - tbuf->col; }
       nm = TBUFCOLS - tbuf->col - p;
       if (nm > 0) {
-        memmove(&tbuf->lines[tbuf->row][tbuf->col + p], &tbuf->lines[tbuf->row][tbuf->col], nm * sizeof(tbuf->lines[0][0])); 
+        memmove(&tbuf->lines[tbuf->row][tbuf->col + p], &tbuf->lines[tbuf->row][tbuf->col], (long unsigned int)(nm) * sizeof(tbuf->lines[0][0])); 
       }
       cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], p);
       break;
@@ -659,18 +659,18 @@ tsmcsi(char z) {
         else if (v == 23) { tsm.sgrattrs &= ~ATTRITALIC; }
         else if (v == 24) { tsm.sgrattrs &= ~ATTRUNDER; }
         else if (v == 27) { tsm.sgrattrs &= ~ATTRREVERSE; }
-        else if (v >= 30 && v <= 37) { tsm.sgrfg = v - 30; }
+        else if (v >= 30 && v <= 37) { tsm.sgrfg = (unsigned char)(v - 30); }
         else if (v == 38 && i + 2 < tsm.nparams && tsm.params[i+1] == 5) {
           tsm.sgrfg = (unsigned char)tsm.params[i+2]; i += 2;
         }
         else if (v == 39) { tsm.sgrfg = CDEFAULT; }
-        else if (v >= 40 && v <= 47) { tsm.sgrbg = v - 40; }
+        else if (v >= 40 && v <= 47) { tsm.sgrbg = (unsigned char)(v - 40); }
         else if (v == 48 && i + 2 < tsm.nparams && tsm.params[i+1] == 5) {
           tsm.sgrbg = (unsigned char)tsm.params[i+2]; i += 2;
         }
         else if (v == 49) { tsm.sgrbg = CDEFAULT; }
-        else if (v >= 90 && v <= 97) { tsm.sgrfg = v - 90 + 8; }
-        else if (v >= 100 && v <= 107) { tsm.sgrbg = v - 100 + 8; }
+        else if (v >= 90 && v <= 97) { tsm.sgrfg = (unsigned char)(v - 90 + 8); }
+        else if (v >= 100 && v <= 107) { tsm.sgrbg = (unsigned char)(v - 100 + 8); }
         i++;
       }
       break;
