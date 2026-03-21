@@ -248,8 +248,8 @@ changefontsz(int delta) {
   if (fontsize < 6) { fontsize = 6; }
   if (fontsize > 72) { fontsize = 72; }
   fontinit();
-  visrows = WHEIGHT / (font->ascent + font->descent);
-  viscols = WWIDTH / font->max_advance_width;
+  visrows = (int)(WHEIGHT / (unsigned int)(font->ascent + font->descent));
+  viscols = (int)(WWIDTH / (unsigned int)font->max_advance_width);
   drawresize();
   ptyresize();
 }
@@ -257,10 +257,10 @@ changefontsz(int delta) {
 void
 clipcopy(const char *text, int len) {
   free(cliptext);
-  cliptext = malloc(len);
+  cliptext = malloc((size_t)len);
   if (!cliptext) { cliptextsz = 0; return; }
-  memcpy(cliptext, text, len);
-  cliptextsz = len;
+  memcpy(cliptext, text, (size_t)len);
+  cliptextsz = (size_t)len;
   XSetSelectionOwner(display, xaclipboard, window, CurrentTime);
 }
 
@@ -333,7 +333,7 @@ killcolors() {
 
 void
 drawinit() {
-  pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, wa.depth);
+  pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, (unsigned int)wa.depth);
   xftdraw = XftDrawCreate(display, pixmap, vis, cmap);
 }
 
@@ -377,12 +377,12 @@ drawcell(int col, int row, Cell *cell, XftColor *fg, XftColor *bg) {
   ch = font->ascent + font->descent;
   x = col * cw;
   y = row * ch;
-  XftDrawRect(xftdraw, bg, x, y, cw, ch);
+  XftDrawRect(xftdraw, bg, x, y, (unsigned int)cw, (unsigned int)ch);
   XftDrawStringUtf8(xftdraw, fg, font,
       x, y + font->ascent,
       (FcChar8 *)&cell->ch, 1);
   if (cell->attrs & ATTRUNDER) {
-    XftDrawRect(xftdraw, fg, x, y + ch - 1, cw, 1);
+    XftDrawRect(xftdraw, fg, x, (y + ch - 1), (unsigned int)cw, 1);
   }
 }
 
@@ -396,7 +396,7 @@ void
 drawresize() {
   XftDrawDestroy(xftdraw);
   XFreePixmap(display, pixmap);
-  pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, wa.depth);
+  pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, (unsigned int)wa.depth);
   xftdraw = XftDrawCreate(display, pixmap, vis, cmap);
 }
 
@@ -467,10 +467,10 @@ ptyinit() {
 void
 ptyresize() {
   struct winsize ws;
-  ws.ws_row = visrows;
-  ws.ws_col = WWIDTH / font->max_advance_width;
-  ws.ws_xpixel = WWIDTH;
-  ws.ws_ypixel = WHEIGHT;
+  ws.ws_row = (short unsigned int)visrows;
+  ws.ws_col = (short unsigned int)(WWIDTH / (unsigned int)font->max_advance_width);
+  ws.ws_xpixel = (short unsigned int)WWIDTH;
+  ws.ws_ypixel = (short unsigned int)WHEIGHT;
   ioctl(ptyfd, TIOCSWINSZ, &ws);
 }
 
@@ -655,10 +655,10 @@ tsmcsi(char z) {
         else if (v == 3) { tsm.sgrattrs |=  ATTRITALIC; }
         else if (v == 4) { tsm.sgrattrs |=  ATTRUNDER; }
         else if (v == 7) { tsm.sgrattrs |=  ATTRREVERSE; }
-        else if (v == 22) { tsm.sgrattrs &= ~ATTRBOLD; }
-        else if (v == 23) { tsm.sgrattrs &= ~ATTRITALIC; }
-        else if (v == 24) { tsm.sgrattrs &= ~ATTRUNDER; }
-        else if (v == 27) { tsm.sgrattrs &= ~ATTRREVERSE; }
+        else if (v == 22) { tsm.sgrattrs &= (unsigned char)~ATTRBOLD; }
+        else if (v == 23) { tsm.sgrattrs &= (unsigned char)~ATTRITALIC; }
+        else if (v == 24) { tsm.sgrattrs &= (unsigned char)~ATTRUNDER; }
+        else if (v == 27) { tsm.sgrattrs &= (unsigned char)~ATTRREVERSE; }
         else if (v >= 30 && v <= 37) { tsm.sgrfg = (unsigned char)(v - 30); }
         else if (v == 38 && i + 2 < tsm.nparams && tsm.params[i+1] == 5) {
           tsm.sgrfg = (unsigned char)tsm.params[i+2]; i += 2;
@@ -695,7 +695,7 @@ tsmcsi(char z) {
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nt = tbuf->row;
       nm = b - nt - p + 1;
-      if (nm > 0) { memmove(tbuf->lines[nt + p], tbuf->lines[nt], nm * sizeof(tbuf->lines[0])); }
+      if (nm > 0) { memmove(tbuf->lines[nt + p], tbuf->lines[nt], (long unsigned int)nm * sizeof(tbuf->lines[0])); }
       for (r = nt; r < nt + p && r <= b; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
     case 'M':
@@ -703,7 +703,7 @@ tsmcsi(char z) {
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nt = tbuf->row;
       nm = b - nt - p + 1;
-      if (nm > 0) { memmove(tbuf->lines[nt], tbuf->lines[nt + p], nm * sizeof(tbuf->lines[0])); }
+      if (nm > 0) { memmove(tbuf->lines[nt], tbuf->lines[nt + p], (long unsigned int)nm * sizeof(tbuf->lines[0])); }
       for (r = b - p + 1; r <= b; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
     case 'S':
@@ -711,7 +711,7 @@ tsmcsi(char z) {
       t = tbuf->scroll + tbuf->scrolltop;
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nm = b - t - p + 1;
-      if (nm > 0) { memmove(tbuf->lines[t], tbuf->lines[t + p], nm * sizeof(tbuf->lines[0])); }
+      if (nm > 0) { memmove(tbuf->lines[t], tbuf->lines[t + p], (long unsigned int)nm * sizeof(tbuf->lines[0])); }
       for (r = b - p + 1; r <= b; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
     case 'T':
@@ -719,7 +719,7 @@ tsmcsi(char z) {
       t = tbuf->scroll + tbuf->scrolltop;
       b = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
       nm = b - t - p + 1;
-      if (nm > 0) { memmove(tbuf->lines[t + p], tbuf->lines[t], nm * sizeof(tbuf->lines[0])); }
+      if (nm > 0) { memmove(tbuf->lines[t + p], tbuf->lines[t], (long unsigned int)nm * sizeof(tbuf->lines[0])); }
       for (r = t; r < t + p; r++) { cellsetrow(tbuf->lines[r], TBUFCOLS); }
       break;
     case 's': /* Save cursor */
@@ -741,7 +741,7 @@ tbufindex() {
   top = tbuf->scroll + tbuf->scrolltop;
   bot = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
   if (tbuf->row == bot) {
-    memmove(tbuf->lines[top], tbuf->lines[top + 1], (bot - top) * sizeof(tbuf->lines[0]));
+    memmove(tbuf->lines[top], tbuf->lines[top + 1], (long unsigned int)(bot - top) * sizeof(tbuf->lines[0]));
     cellsetrow(tbuf->lines[bot], TBUFCOLS);
   } else {
     if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
@@ -757,7 +757,7 @@ tbufrevindex () {
   top = tbuf->scroll + tbuf->scrolltop;
   bot = tbuf->scroll + (tbuf->scrollbot ? tbuf->scrollbot : visrows - 1);
   if (tbuf->row == top) {
-    memmove(tbuf->lines[top + 1], tbuf->lines[top], (bot - top) * sizeof(tbuf->lines[0]));
+    memmove(tbuf->lines[top + 1], tbuf->lines[top], (long unsigned int)(bot - top) * sizeof(tbuf->lines[0]));
     cellsetrow(tbuf->lines[top], TBUFCOLS);
   } else {
     if (tbuf->row > tbuf->scroll) { tbuf->row--; }
