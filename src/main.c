@@ -153,6 +153,7 @@ XftColor cursorfgrev, cursorbgrev;
 XftColor throbpalette[NRAINBOW];
 double throbphase;
 int throbcsr;
+int screendirty;
 
 struct timespec thenr, nowr;
 long long elapsedr;
@@ -743,10 +744,12 @@ tbufindex() {
   if (tbuf->row == bot) {
     memmove(tbuf->lines[top], tbuf->lines[top + 1], (long unsigned int)(bot - top) * sizeof(tbuf->lines[0]));
     cellsetrow(tbuf->lines[bot], TBUFCOLS);
+    screendirty = 1;
   } else {
     if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
     if (!tbuf->scrollbot && tbuf->row >= tbuf->scroll + visrows) {
       tbuf->scroll = tbuf->row - visrows + 1;
+      screendirty = 1;
     }
   }
 }
@@ -791,6 +794,7 @@ tsmproc(char c) {
         if (tbuf->row >= tbuf->scroll + visrows) {
           tbuf->scroll = tbuf->row - visrows + 1;
         }
+        screendirty = 1;
       }
       break;
     case TSMESC:
