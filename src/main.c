@@ -878,7 +878,7 @@ int
 main(int argc, char *argv[]) {
   XEvent ev, reply;
   int quit, xfd, r, len, maxscroll, darkth, sel;
-  int cw, ch, cx, cy, crow, ccol, reverse, cidx;
+  int cw, ch, cx, cy, crow, ccol, reverse, cidx, ncol;
   fd_set fds;
   struct timeval tv;
   long long remaining;
@@ -892,6 +892,8 @@ main(int argc, char *argv[]) {
   int fmt;
   unsigned long ni, after;
   unsigned char *data;
+  Cell *cell;
+  XftColor *nfg, *nbg, *nrfg, *nrbg, *ntmp;
   darkth = detectdark();
   toggletheme = 0;
   fontsize = 13;
@@ -1067,29 +1069,36 @@ main(int argc, char *argv[]) {
     }
     if (DIFFNS(thenr, nowr) >= GFXTICKNS) {
       GETNS(thenr);
-      XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
-      for (r = 0; r < visrows && (tbuf->scroll + r) < TBUFROWS; r++) {
-        int col;
-        for (col = 0; col < viscols; col++) {
-          Cell *cell = &tbuf->lines[tbuf->scroll + r][col];
-          XftColor *fg, *bg;
-          fg = cellcolor(cell->fg, 1);
-          bg = cellcolor(cell->bg, 0);
-          if (cell->attrs & ATTRREVERSE) { XftColor *tmp = fg; fg = bg; bg = tmp; }
-          drawcell(col, r, cell, fg, bg);
-        }
-      }
       cw = font->max_advance_width;
       ch = font->ascent + font->descent;
       crow = tbuf->row - tbuf->scroll;
       ccol = tbuf->col;
       cx = ccol * cw;
       cy = crow * ch;
+      if (screendirty) {
+        screendirty = 0;
+        XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
+        for (r = 0; r < visrows && (tbuf->scroll + r) < TBUFROWS; r++) {
+          for (ncol = 0; ncol < viscols; ncol++) {
+            cell = &tbuf->lines[tbuf->scroll + r][ncol];
+            nfg = cellcolor(cell->fg, 1);
+            nbg = cellcolor(cell->bg, 0);
+            if (cell->attrs & ATTRREVERSE) {
+              ntmp = nfg; nfg = nbg; nbg = ntmp;
+            }
+            drawcell(ncol, r, cell, nfg, nbg);
+          }
+        }
+      }
       if (crow >= 0 && crow < visrows) {
         curcell = &tbuf->lines[tbuf->row][ccol];
         reverse = curcell->attrs & ATTRREVERSE;
+        nrfg = cellcolor(curcell->fg, 1);
+        nrbg = cellcolor(curcell->bg, 0);
+        if (reverse) { ntmp = nrfg; nrfg = nrbg; nrbg = ntmp; }
+        drawcell(ccol, crow, curcell, nrfg, nrbg);
         if (throbcsr) {
-          throbphase += 1.0/180.0;
+          throbphase += 1.0/180;
           if (throbphase >= 1.0) { throbphase -= 1.0; }
           segf = throbphase * NRAINBOW;
           cidx = ((int)segf % NRAINBOW);
@@ -1098,26 +1107,19 @@ main(int argc, char *argv[]) {
           blendcolor(&throb, &colorbg, &throbpalette[cidx], bright);
           cfg = &colorfg;
           cbg = &throb;
-          if (tsm.curshape == 1) {
-            XftDrawRect(xftdraw, cbg, cx, (int)(cy + ch - 2), (unsigned int)cw, 2);
-          } else if (tsm.curshape == 2) {
-            XftDrawRect(xftdraw, cbg, cx, cy, 2, (unsigned int)ch);
-          } else {
-            drawcell(ccol, crow, curcell, cfg, cbg);
-          }
         } else {
           cfg = reverse ? &cursorfgrev : &cursorfgclr;
           cbg = reverse ? &cursorbgrev : &cursorbgclr;
-          if (tsm.curshape == 1) {
-            XftDrawRect(xftdraw, cbg, cx, (int)(cy + ch - 2), (unsigned int)cw, 2);
-          } else if (tsm.curshape == 2) {
-            XftDrawRect(xftdraw, cbg, cx, cy, 2, (unsigned int)ch);
-          } else {
-            drawcell(ccol, crow, curcell, cfg, cbg);
-          }
         }
+        if (tsm.curshape == 1) {
+          XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, cw, 2);
+        } else if (tsm.curshape == 2) {
+          XftDrawRect(xftdraw, cbg, cx, cy, 2, ch);
+        } else {
+          drawcell(ccol, crow, curcell, cfg, cbg);
+        }
+        drawflush();
       }
-      drawflush();
     }
   }
   ptykill();
