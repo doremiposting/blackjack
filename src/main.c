@@ -1112,9 +1112,9 @@ main(int argc, char *argv[]) {
           cbg = reverse ? &cursorbgrev : &cursorbgclr;
         }
         if (tsm.curshape == 1) {
-          XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, cw, 2);
+          XftDrawRect(xftdraw, cbg, cx, cy + ch - 2, (unsigned int)cw, 2);
         } else if (tsm.curshape == 2) {
-          XftDrawRect(xftdraw, cbg, cx, cy, 2, ch);
+          XftDrawRect(xftdraw, cbg, cx, cy, 2, (unsigned int)ch);
         } else {
           drawcell(ccol, crow, curcell, cfg, cbg);
         }
