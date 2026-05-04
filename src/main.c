@@ -964,7 +964,9 @@ main(int argc, char *argv[]) {
           if (XGetWindowProperty(display, window, xaseldata,
               0, (1 << 20), true, AnyPropertyType,
               &type, &fmt, &ni, &after, &data) == Success && data) {
-            write(ptyfd, data, (size_t)ni);
+            /* XXX: https://stackoverflow.com/questions/40576003/ignoring-warning-wunused-result */
+            /* >That (void) alone isn't enough is on purpose */
+            (void)!write(ptyfd, data, (size_t)ni);
             XFree(data);
           }
           break;
@@ -975,7 +977,7 @@ main(int argc, char *argv[]) {
                 tbuf->scroll -= visrows;
                 if (tbuf->scroll < 0) { tbuf->scroll = 0; }
               } else {
-                write (ptyfd, "\033[5~", 4);
+                (void)!write(ptyfd, "\033[5~", 4);
               }
             } else if (ks == XK_Next) {
               if (ev.xkey.state & ShiftMask) {
@@ -984,26 +986,26 @@ main(int argc, char *argv[]) {
                 tbuf->scroll += visrows;
                 if (tbuf->scroll > maxscroll) { tbuf->scroll = maxscroll; }
               } else {
-                write(ptyfd, "\033[6~", 4);
+                (void)!write(ptyfd, "\033[6~", 4);
               }
             } else if (ks == XK_Up) {
-              write(ptyfd, tsm.appkeys ? "\033OA" : "\033[A", 3);
+              (void)!write(ptyfd, tsm.appkeys ? "\033OA" : "\033[A", 3);
             } else if (ks == XK_Down) {
-              write(ptyfd, tsm.appkeys ? "\033OB" : "\033[B", 3);
+              (void)!write(ptyfd, tsm.appkeys ? "\033OB" : "\033[B", 3);
             } else if (ks == XK_Right) {
-              write(ptyfd, tsm.appkeys ? "\033OC" : "\033[C", 3);
+              (void)!write(ptyfd, tsm.appkeys ? "\033OC" : "\033[C", 3);
             } else if (ks == XK_Left) {
-              write(ptyfd, tsm.appkeys ? "\033OD" : "\033[D", 3);
+              (void)!write(ptyfd, tsm.appkeys ? "\033OD" : "\033[D", 3);
             } else if (ks == XK_Home) {
-              /* write(ptyfd, tsm.appkeys ? "\033OH" : "\033[1~", 4); */
-              write(ptyfd, "\033[1~", 4);
+              /* (void)!write(ptyfd, tsm.appkeys ? "\033OH" : "\033[1~", 4); */
+              (void)!write(ptyfd, "\033[1~", 4);
             } else if (ks == XK_End) {
-              /* write(ptyfd, tsm.appkeys ? "\033OF" : "\033[4~", 4); */
-              write(ptyfd, "\033[4~", 4);
+              /* (void)!write(ptyfd, tsm.appkeys ? "\033OF" : "\033[4~", 4); */
+              (void)!write(ptyfd, "\033[4~", 4);
             }else if (ks == XK_Delete) {
-              write(ptyfd, "\033[3~", 4);
+              (void)!write(ptyfd, "\033[3~", 4);
             } else if (ks == XK_Insert) {
-              write(ptyfd, "\033[2~", 4);
+              (void)!write(ptyfd, "\033[2~", 4);
             }
             else if (ev.xkey.state & Mod1Mask) {
               if (ev.xkey.state & ShiftMask) {
@@ -1017,20 +1019,20 @@ main(int argc, char *argv[]) {
               else if (ks == XK_c) { /* TODO: Wire to selection */ clipcopy("", 0); }
               else if (ks == XK_v) { clippaste(ev.xkey.time); }
             }
-            else if (ks == XK_F1) { write(ptyfd, "\033OP", 3); }
-            else if (ks == XK_F2) { write(ptyfd, "\033OQ", 3); }
-            else if (ks == XK_F3) { write(ptyfd, "\033OR", 3); }
-            else if (ks == XK_F4) { write(ptyfd, "\033OS", 3); }
-            else if (ks == XK_F5) { write(ptyfd, "\033[15~", 5); }
-            else if (ks == XK_F6) { write(ptyfd, "\033[17~", 5); }
-            else if (ks == XK_F7) { write(ptyfd, "\033[18~", 5); }
-            else if (ks == XK_F8) { write(ptyfd, "\033[19~", 5); }
-            else if (ks == XK_F9) { write(ptyfd, "\033[20~", 5); }
-            else if (ks == XK_F10) { write(ptyfd, "\033[21~", 5); }
-            else if (ks == XK_F11) { write(ptyfd, "\033[23~", 5); }
-            else if (ks == XK_F12) { write(ptyfd, "\033[24~", 5); }
+            else if (ks == XK_F1) { (void)!write(ptyfd, "\033OP", 3); }
+            else if (ks == XK_F2) { (void)!write(ptyfd, "\033OQ", 3); }
+            else if (ks == XK_F3) { (void)!write(ptyfd, "\033OR", 3); }
+            else if (ks == XK_F4) { (void)!write(ptyfd, "\033OS", 3); }
+            else if (ks == XK_F5) { (void)!write(ptyfd, "\033[15~", 5); }
+            else if (ks == XK_F6) { (void)!write(ptyfd, "\033[17~", 5); }
+            else if (ks == XK_F7) { (void)!write(ptyfd, "\033[18~", 5); }
+            else if (ks == XK_F8) { (void)!write(ptyfd, "\033[19~", 5); }
+            else if (ks == XK_F9) { (void)!write(ptyfd, "\033[20~", 5); }
+            else if (ks == XK_F10) { (void)!write(ptyfd, "\033[21~", 5); }
+            else if (ks == XK_F11) { (void)!write(ptyfd, "\033[23~", 5); }
+            else if (ks == XK_F12) { (void)!write(ptyfd, "\033[24~", 5); }
             else if (len > 0) {
-              write(ptyfd, buf, (size_t)len);
+              (void)!write(ptyfd, buf, (size_t)len);
             }
           }
           break;
