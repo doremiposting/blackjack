@@ -37,6 +37,8 @@ int fontsize;
 Atom xaclipboard, xautf8str, xatargets, xaseldata;
 char *cliptext;
 size_t cliptextsz;
+int selactive, selexists, selancrow, selanccol;
+int selrow1, selcol1, selrow2, selcol2;
 
 #define TBUFCOLS 256
 /* #define TBUFROWS 128 */
@@ -214,7 +216,7 @@ x11init() {
   xatargets = XInternAtom(display, "TARGETS", false);
   xaseldata = XInternAtom(display, "XSEL_DATA", false);
   XSetWMProtocols(display, window, &wmdelwin, 1);
-  XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask);
+  XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask|ButtonReleaseMask);
   XStoreName(display, window, "bj");
   XMapWindow(display, window);
 }
@@ -874,6 +876,45 @@ tsmproc(char c) {
   }
 }
 
+static void
+selcopytext() {
+  int r, c, endcol, len, cap;
+  char *buf, *p;
+  Cell *cell;
+  cap = (selrow2 - selrow1 + 1) * (viscols + 1) + 1;
+  buf = calloc((size_t)cap, sizeof(size_t));
+  if (!buf) { return; }
+  p = buf;
+  for (r = selrow1; r <= selrow2; r++) {
+    endcol = (r == selrow2) ? selcol2 : viscols - 1;
+    /* strip trailing spaces */
+    while (endcol > 0 && tbuf->lines[r][endcol].ch == ' ') { endcol--; }
+    c = (r == selrow1) ? selcol1 : 0;
+    for (; c <= endcol; c++) {
+      cell = &tbuf->lines[r][c];
+      *p++ = cell->ch ? cell->ch : ' ';
+    }
+    if (r < selrow2) { *p++ = '\n'; }
+  }
+  *p = '\0';
+  len = (int)(p - buf);
+  clipcopy(buf, len);
+  free(buf);
+}
+
+static void
+pixeltocell(int px, int py, int *col, int *row) {
+  int cw, ch;
+  cw = font->max_advance_width;
+  ch = font->ascent + font->descent;
+  *col = px / cw;
+  *row = tbuf->scroll + py / ch;
+  if (*col < 0) { *col = 0; }
+  if (*col >= viscols) { *col = viscols - 1; }
+  if (*row < tbuf->scroll) { *row = tbuf->scroll; }
+  if (*row >= tbuf->scroll + visrows) { *row = tbuf->scroll + visrows - 1; }
+}
+
 int
 main(int argc, char *argv[]) {
   XEvent ev, reply;
@@ -894,6 +935,8 @@ main(int argc, char *argv[]) {
   unsigned char *data;
   Cell *cell;
   XftColor *nfg, *nbg, *nrfg, *nrbg, *ntmp;
+  int mcol, mrow, rrow, rcol;
+  int incell; /* westfallen */
   darkth = detectdark();
   toggletheme = 0;
   fontsize = 13;
@@ -970,6 +1013,37 @@ main(int argc, char *argv[]) {
             XFree(data);
           }
           break;
+        case MotionNotify: {
+            if (!selactive) { break; }
+            pixeltocell(ev.xmotion.x, ev.xmotion.y, &mcol, &mrow);
+            if (mrow < selancrow || (mrow == selancrow && mcol < selanccol)) {
+              selrow1 = mrow; selcol1 = mcol;
+              selrow2 = selancrow; selcol2 = selanccol;
+            } else {
+              selrow1 = selancrow; selcol1 = selanccol;
+              selrow2 = mrow; selcol2 = mcol;
+            }
+            selexists = 1;
+            screendirty = 1;
+          }
+          break;
+        case ButtonRelease : {
+            if (ev.xbutton.button != Button1 || !selactive) { break; }
+            selactive = 0;
+            pixeltocell(ev.xbutton.x, ev.xbutton.y, &rcol, &rrow);
+            if (rrow < selancrow || (rrow == selancrow && rcol < selanccol)) {
+              selrow1 = rrow; selcol1 = rcol;
+              selrow2 = selancrow; selcol2 = selanccol;
+            } else {
+              selrow1 = selancrow; selcol1 = selanccol;
+              selrow2 = rrow; selcol2 = rcol;
+            }
+            if (selrow1 == selrow2 && selcol1 == selcol2) {
+              selexists = 0;
+            } else { selexists = 1; selcopytext(); }
+            screendirty = 1;
+          }
+          break;
         case KeyPress: {
             len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
             if (ks == XK_Prior) {
@@ -1016,7 +1090,9 @@ main(int argc, char *argv[]) {
                   if (throbcsr) { throbphase = 0.0; }
                 }
               }
-              else if (ks == XK_c) { /* TODO: Wire to selection */ clipcopy("", 0); }
+              else if (ks == XK_c) {
+                if (selexists) { selcopytext(); }
+              }
               else if (ks == XK_v) { clippaste(ev.xkey.time); }
             }
             else if (ks == XK_F1) { (void)!write(ptyfd, "\033OP", 3); }
@@ -1045,6 +1121,13 @@ main(int argc, char *argv[]) {
               if (maxscroll < 0) { maxscroll = 0; }
               tbuf->scroll += 3;
               if (tbuf->scroll > maxscroll) { tbuf->scroll = maxscroll; }
+            } else if (ev.xbutton.button == Button1) {
+              pixeltocell(ev.xbutton.x, ev.xbutton.y, &selanccol, &selancrow);
+              selrow1 = selrow2 = selancrow;
+              selcol1 = selcol2 = selanccol;
+              selactive = 1;
+              selexists = 0;
+              screendirty = 1;
             }
           }
           break;
@@ -1087,6 +1170,14 @@ main(int argc, char *argv[]) {
             nbg = cellcolor(cell->bg, 0);
             if (cell->attrs & ATTRREVERSE) {
               ntmp = nfg; nfg = nbg; nbg = ntmp;
+            }
+            incell = selexists &&
+              ((r + tbuf->scroll) > selrow1 ||
+               ((r + tbuf->scroll) == selrow1 && ncol >= selcol1)) &&
+              ((r + tbuf->scroll) < selrow2 ||
+               ((r + tbuf->scroll) == selrow2 && ncol <= selcol2));
+            if (incell) {
+              ntmp = nfg; nfg = nbg; nbg = ntmp; /* swap fg/bg for hilight */
             }
             drawcell(ncol, r, cell, nfg, nbg);
           }
