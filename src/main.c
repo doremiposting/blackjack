@@ -35,6 +35,7 @@ volatile sig_atomic_t toggletheme;
 int isdark;
 int fontsize;
 Atom xaclipboard, xautf8str, xatargets, xaseldata;
+Atom xanetname;
 char *cliptext;
 size_t cliptextsz;
 int selactive, selexists, selancrow, selanccol;
@@ -86,6 +87,8 @@ typedef struct {
   int appkeys;
   unsigned char sgrfg, sgrbg;
   unsigned char sgrattrs;
+  char oscbuf[512];
+  int osclen;
 } Tsm;
 Tsm tsm;
 
@@ -217,6 +220,7 @@ x11init() {
   xautf8str = XInternAtom(display, "UTF8_STRING", false);
   xatargets = XInternAtom(display, "TARGETS", false);
   xaseldata = XInternAtom(display, "XSEL_DATA", false);
+  xanetname = XInternAtom(display, "_NET_WM_NAME", false);
   XSetWMProtocols(display, window, &wmdelwin, 1);
   XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask|ButtonReleaseMask);
   XStoreName(display, window, "bj");
@@ -515,6 +519,7 @@ tsminit() {
   tsm.curshape = 0; tsm.curblink = 0;
   tsm.sgrfg = tsm.sgrbg = CDEFAULT;
   tsm.sgrattrs = 0;
+  tsm.osclen = 0;
 }
 
 void
@@ -771,6 +776,25 @@ tbufrevindex () {
   }
 }
 
+static void
+tsmosc() {
+  char *sep, *title;
+  int cmd;
+  sep = memchr(tsm.oscbuf, ';', (size_t)tsm.osclen);
+  if (!sep) { tsm.osclen = 0; return; }
+  *sep = '\0';
+  cmd = atoi(tsm.oscbuf);
+  title = sep+1;
+  if (cmd == 0 || cmd == 2) {
+    /* XStoreName covers legacy WM_NAME */
+    XStoreName(display, window, title);
+    /* _NET_WM_NAME for modern cases */
+    XChangeProperty(display, window, xanetname, xautf8str,
+        8, PropModeReplace, (unsigned char *)title, (int)strlen(title));
+  }
+  tsm.osclen = 0;
+}
+
 void
 tsmproc(char c) {
   unsigned char uc;
@@ -841,10 +865,19 @@ tsmproc(char c) {
       }
       break;
     case TSMOSC:
-      /* TODO: Return to TSMESC for now to reset cleanly. */
-      if (uc == 0x07) { tsm.state = TSMNORMAL; }
-      else if (uc == 0x1B) { tsm.state = TSMESC; }
-      /* TODO: Silently consume rest of the payload */
+      if (uc == 0x07) {
+        tsm.oscbuf[tsm.osclen] = '\0';
+        tsmosc();
+        tsm.state = TSMNORMAL;
+      } else if (uc == 0x1B) {
+        /* ESC \ is the alternative string terminator (ST);
+         * process now, let TSMESC consume the trailing backslash */
+        tsm.oscbuf[tsm.osclen] = '\0';
+        tsmosc();
+        tsm.state = TSMESC;
+      } else if (tsm.osclen < (int)sizeof(tsm.oscbuf) - 1) {
+        tsm.oscbuf[tsm.osclen++] = (char)uc;
+      }
       break;
     case TSMCHARSEL:
       /* Drop first byte and discard */
