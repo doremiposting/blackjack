@@ -39,6 +39,8 @@ char *cliptext;
 size_t cliptextsz;
 int selactive, selexists, selancrow, selanccol;
 int selrow1, selcol1, selrow2, selcol2;
+int selscrolldir, selscrolltick;
+int selmousex, selmousey;
 
 #define TBUFCOLS 256
 /* #define TBUFROWS 128 */
@@ -915,6 +917,7 @@ pixeltocell(int px, int py, int *col, int *row) {
   if (*row >= tbuf->scroll + visrows) { *row = tbuf->scroll + visrows - 1; }
 }
 
+#define SELSCROLLZONE 20
 int
 main(int argc, char *argv[]) {
   XEvent ev, reply;
@@ -936,6 +939,7 @@ main(int argc, char *argv[]) {
   Cell *cell;
   XftColor *nfg, *nbg, *nrfg, *nrbg, *ntmp;
   int mcol, mrow, rrow, rcol;
+  int newcol, newrow;
   int incell; /* westfallen */
   darkth = detectdark();
   toggletheme = 0;
@@ -1016,6 +1020,13 @@ main(int argc, char *argv[]) {
         case MotionNotify: {
             if (!selactive) { break; }
             pixeltocell(ev.xmotion.x, ev.xmotion.y, &mcol, &mrow);
+            selmousex = ev.xmotion.x;
+            selmousey = ev.xmotion.y;
+            if (ev.xmotion.y < SELSCROLLZONE) {
+              selscrolldir = -1; /* scroll up */
+            } else if (ev.xmotion.y >= (int)WHEIGHT - SELSCROLLZONE) {
+              selscrolldir = 1; /* scroll down */
+            } else { selscrolldir = 0; }
             if (mrow < selancrow || (mrow == selancrow && mcol < selanccol)) {
               selrow1 = mrow; selcol1 = mcol;
               selrow2 = selancrow; selcol2 = selanccol;
@@ -1042,6 +1053,8 @@ main(int argc, char *argv[]) {
               selexists = 0;
             } else { selexists = 1; selcopytext(); }
             screendirty = 1;
+            selscrolldir = 0;
+            selscrolltick = 0;
           }
           break;
         case KeyPress: {
@@ -1122,12 +1135,27 @@ main(int argc, char *argv[]) {
               tbuf->scroll += 3;
               if (tbuf->scroll > maxscroll) { tbuf->scroll = maxscroll; }
             } else if (ev.xbutton.button == Button1) {
-              pixeltocell(ev.xbutton.x, ev.xbutton.y, &selanccol, &selancrow);
-              selrow1 = selrow2 = selancrow;
-              selcol1 = selcol2 = selanccol;
-              selactive = 1;
-              selexists = 0;
-              screendirty = 1;
+              if ((ev.xbutton.state & ShiftMask) && selexists) {
+                pixeltocell(ev.xbutton.x, ev.xbutton.y, &newcol, &newrow);
+                if (newrow < selancrow ||
+                    (newrow == selancrow && newcol < selanccol)) {
+                  selrow1 = newrow; selcol1 = newcol;
+                  selrow2 = selancrow; selcol2 = selanccol;
+                } else {
+                  selrow1 = selancrow; selcol1 = selanccol;
+                  selrow2 = newrow; selcol2 = newcol;
+                }
+                selexists = 1;
+                selcopytext();
+                screendirty = 1;
+              } else {
+                pixeltocell(ev.xbutton.x, ev.xbutton.y, &selanccol, &selancrow);
+                selrow1 = selrow2 = selancrow;
+                selcol1 = selcol2 = selanccol;
+                selactive = 1;
+                selexists = 0;
+                screendirty = 1;
+              }
             }
           }
           break;
@@ -1160,6 +1188,34 @@ main(int argc, char *argv[]) {
       ccol = tbuf->col;
       cx = ccol * cw;
       cy = crow * ch;
+      if (selactive && selscrolldir != 0) {
+        selscrolltick++;
+        if (selscrolltick >= 3) { /* rate limit -20rows/sec at 60fps */
+          selscrolltick = 0;
+          if (selscrolldir < 0) {
+            tbuf->scroll--;
+            if (tbuf->scroll < 0) { tbuf->scroll = 0; }
+          } else {
+            maxscroll = tbuf->row - visrows + 1;
+            if (maxscroll < 0) { maxscroll = 0; }
+            tbuf->scroll++;
+            if (tbuf->scroll > maxscroll) { tbuf->scroll = maxscroll; }
+          }
+          /* XXX: rcol/rrow: they're only used inside the ButtonRelease case
+             so there's no actual conflict. */
+          pixeltocell(selmousex, selmousey, &rcol, &rrow);
+          if (rrow < selancrow ||
+              (rrow == selancrow && rcol < selanccol)) {
+            selrow1 = rrow; selcol1 = rcol;
+            selrow2 = selancrow; selcol2 = selanccol;
+          } else {
+            selrow1 = selancrow; selcol1 = selanccol;
+            selrow2 = rrow; selcol2 = rcol;
+          }
+          selexists = 1;
+          screendirty = 1;
+        }
+      }
       if (screendirty) {
         screendirty = 0;
         XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
