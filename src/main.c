@@ -252,6 +252,7 @@ void ptyresize();
 
 void
 changefontsz(int delta) {
+  int i;
   fontkill();
   fontsize += delta;
   if (fontsize < 6) { fontsize = 6; }
@@ -259,6 +260,14 @@ changefontsz(int delta) {
   fontinit();
   visrows = (int)(WHEIGHT / (unsigned int)(font->ascent + font->descent));
   viscols = (int)(WWIDTH / (unsigned int)font->max_advance_width);
+  for (i = 0; i < 2; i++) {
+    tbufs[i].scrolltop = 0;
+    tbufs[i].scrollbot = 0;
+    if (tbufs[i].row >= tbufs[i].scroll + visrows) {
+      tbufs[i].row = tbufs[i].scroll + visrows - 1;
+    }
+  }
+  screendirty = 1;
   drawresize();
   ptyresize();
 }
@@ -1011,6 +1020,14 @@ main(int argc, char *argv[]) {
             WHEIGHT = (unsigned int)ev.xconfigure.height;
             visrows = (int)WHEIGHT / (font->ascent + font->descent);
             viscols = (int)WWIDTH / font->max_advance_width;
+            for (r = 0; r < 2; r++) {
+              tbufs[r].scrolltop = 0;
+              tbufs[r].scrollbot = 0;
+              if (tbufs[r].row >= tbufs[r].scroll + visrows) {
+                tbufs[r].row = tbufs[r].scroll + visrows - 1;
+              }
+            }
+            screendirty = 1;
             drawresize();
             ptyresize();
           }
