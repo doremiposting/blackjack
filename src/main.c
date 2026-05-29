@@ -273,13 +273,13 @@ changefontsz(int delta) {
 }
 
 void
-clipcopy(const char *text, int len) {
+clipcopy(const char *text, int len, Time t) {
   free(cliptext);
   cliptext = malloc((size_t)len);
   if (!cliptext) { cliptextsz = 0; return; }
   memcpy(cliptext, text, (size_t)len);
   cliptextsz = (size_t)len;
-  XSetSelectionOwner(display, xaclipboard, window, CurrentTime);
+  XSetSelectionOwner(display, xaclipboard, window, t);
 }
 
 void
@@ -609,9 +609,9 @@ tsmcsi(char z) {
       }
       break;
     case 'K':
-      if (p == 0) { cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], TBUFCOLS - tbuf->col); }
+      if (p == 0) { cellsetrow(&tbuf->lines[tbuf->row][tbuf->col], viscols - tbuf->col); }
       else if (p == 1) { cellsetrow(tbuf->lines[tbuf->row], tbuf->col + 1); }
-      else if (p == 2) { cellsetrow(tbuf->lines[tbuf->row], TBUFCOLS); }
+      else if (p == 2) { cellsetrow(tbuf->lines[tbuf->row], viscols); }
       break;
     case 'P': /* Delete Character */
       if (!p) { p = 1; }
@@ -765,6 +765,7 @@ tbufindex() {
     screendirty = 1;
   } else {
     if (tbuf->row < TBUFROWS - 1) { tbuf->row++; }
+    cellsetrow(tbuf->lines[tbuf->row], TBUFCOLS);
     if (!tbuf->scrollbot && tbuf->row >= tbuf->scroll + visrows) {
       tbuf->scroll = tbuf->row - visrows + 1;
       screendirty = 1;
@@ -921,7 +922,7 @@ tsmproc(char c) {
 }
 
 static void
-selcopytext() {
+selcopytext(Time t) {
   int r, c, endcol, len, cap;
   char *buf, *p;
   Cell *cell;
@@ -942,7 +943,7 @@ selcopytext() {
   }
   *p = '\0';
   len = (int)(p - buf);
-  clipcopy(buf, len);
+  clipcopy(buf, len, t);
   free(buf);
 }
 
@@ -1002,7 +1003,7 @@ main(int argc, char *argv[]) {
   visrows = (int)WHEIGHT / (font->ascent + font->descent);
   viscols = (int)WWIDTH / font->max_advance_width;
   quit = 0;
-  throbcsr = 1;
+  throbcsr = 0;
   GETNS(thenr); GETNS(nowr);
   while (!quit) {
     if (toggletheme) {
@@ -1047,6 +1048,7 @@ main(int argc, char *argv[]) {
             XChangeProperty(rq->display, rq->requestor, rq->property,
                 XA_ATOM, 32, PropModeReplace,
                 (unsigned char *)supported, 2);
+	    reply.xselection.property = rq->property;
           } else if ((rq->target == xautf8str || rq->target == XA_STRING)
                     && cliptext && cliptextsz > 0) {
             XChangeProperty(rq->display, rq->requestor, rq->property,
@@ -1101,7 +1103,7 @@ main(int argc, char *argv[]) {
             }
             if (selrow1 == selrow2 && selcol1 == selcol2) {
               selexists = 0;
-            } else { selexists = 1; selcopytext(); }
+            } else { selexists = 1; selcopytext(ev.xbutton.time); }
             screendirty = 1;
             selscrolldir = 0;
             selscrolltick = 0;
@@ -1154,7 +1156,7 @@ main(int argc, char *argv[]) {
                 }
               }
               else if (ks == XK_c) {
-                if (selexists) { selcopytext(); }
+                if (selexists) { selcopytext(ev.xkey.time); }
               }
               else if (ks == XK_v) { clippaste(ev.xkey.time); }
             }
@@ -1196,7 +1198,7 @@ main(int argc, char *argv[]) {
                   selrow2 = newrow; selcol2 = newcol;
                 }
                 selexists = 1;
-                selcopytext();
+                selcopytext(ev.xbutton.time);
                 screendirty = 1;
               } else {
                 pixeltocell(ev.xbutton.x, ev.xbutton.y, &selanccol, &selancrow);
