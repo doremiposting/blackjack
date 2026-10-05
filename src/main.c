@@ -89,6 +89,8 @@ typedef struct {
   unsigned char sgrattrs;
   char oscbuf[512];
   int osclen;
+  char charsel; /* ESC followed by: ')' '(' '*' '+' */
+  int g0acs; /* G0 using DEC special graphics set sets this to 1 */
 } Tsm;
 Tsm tsm;
 
@@ -250,6 +252,17 @@ fontkill() {
 void drawresize();
 void ptyresize();
 
+static char
+acsascii(char c) {
+  switch (c) {
+    case 'q': return '-'; break;
+    case 'x': return '|'; break;
+    case 'l': case 'm': case 'k': case 'j':
+    case 't': case 'u': case 'v': case 'w': case 'n': return '+'; break;
+    default: return c;
+  }
+}
+
 void
 changefontsz(int delta) {
   int i;
@@ -367,7 +380,8 @@ cellsetrow(Cell *cells, int n) {
   for (i = 0 ; i < n ; i++) {
     cells[i].ch = ' ';
     cells[i].fg = CDEFAULT;
-    cells[i].bg = CDEFAULT;
+    /* cells[i].bg = CDEFAULT; */
+    cells[i].bg = tsm.sgrbg;
     cells[i].attrs = 0;
   }
 }
@@ -506,6 +520,7 @@ ptyread() {
   n = (int)read(ptyfd, buf, sizeof(buf));
   if (n < 0 && errno == EIO) { return -1; }
   if (n <= 0) { return 0; }
+  screendirty = 1;
   for (i = 0; i < n; i++) { tsmproc(buf[i]); }
   return 0;
 }
@@ -529,6 +544,7 @@ tsminit() {
   tsm.sgrfg = tsm.sgrbg = CDEFAULT;
   tsm.sgrattrs = 0;
   tsm.osclen = 0;
+  tsm.g0acs = 0;
 }
 
 void
@@ -639,7 +655,9 @@ tsmcsi(char z) {
     case 'h':
       if (tsm.priv) {
         for (i = 0; i < tsm.nparams; i++) {
-          if (tsm.params[i] == 1049 && tbuf == &tbufs[0]) {
+          if ((tsm.params[i] == 1049 ||
+                tsm.params[i] == 1047 || tsm.params[i] == 47)
+              && tbuf == &tbufs[0]) {
             tbuf->svrow = tbuf->row; tbuf->svcol = tbuf->col;
             tbuf->svscroll = tbuf->scroll;
             tbufclear(&tbufs[1]);
@@ -821,6 +839,7 @@ tsmproc(char c) {
       else if (uc == '\r') { tbuf->col = 0; }
       else if (uc == '\n') { tbufindex(); }
       else if (uc >= 0x20 && uc < 0x7F) {
+        if (tsm.g0acs) { c = acsascii(c); }
         if (tbuf ->col >= viscols) {
           tbuf->col = 0; tbufindex();
         }
@@ -844,6 +863,7 @@ tsmproc(char c) {
         tsm.priv = 0;
       } else if (c == '(' || c == ')' || c == '*' || c == '+') {
         tsm.state = TSMCHARSEL;
+        tsm.charsel = c;
       } else if (c == 'M') { /* reverse index */
         tbufrevindex();
         tsm.state = TSMNORMAL;
@@ -890,9 +910,9 @@ tsmproc(char c) {
       }
       break;
     case TSMCHARSEL:
-      /* Drop first byte and discard */
-      /* Vestigial from VT100 */
-      /* TODO: DEC line-drawing (ESC ( 0) used by ncurses */
+      /* ESC ( 0 selects DEC special graphics on G0; */
+      /* ESC ( B selects ASCII */
+      if (tsm.charsel == '(') { tsm.g0acs = (c == '0'); }
       tsm.state = TSMNORMAL;
       break;
     case TSMCSI:

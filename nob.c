@@ -23,7 +23,7 @@ static forceinline
 int
 compilefile(const char *fn, const char *out) {
   cmd_append(&cmd,
-		"-std=c2y", "-g", "-c", "-o", out, fn
+		"-std=c2y", "-c", "-o", out, fn
   );
 	if (!cmd_run(&cmd)) { return 1; }
 }
