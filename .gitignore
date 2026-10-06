@@ -1,5 +1,6 @@
 nob
 nob.old
+*.swp
 bj
 build
 *.o

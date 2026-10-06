@@ -175,6 +175,8 @@ long long elapsedr;
 
 
 unsigned int WWIDTH, WHEIGHT;
+unsigned int pixw, pixh;
+int resizepending, exposepending;
 
 #define ERRORTH -1
 #define LIGHTTH 0
@@ -224,7 +226,7 @@ x11init() {
   xaseldata = XInternAtom(display, "XSEL_DATA", false);
   xanetname = XInternAtom(display, "_NET_WM_NAME", false);
   XSetWMProtocols(display, window, &wmdelwin, 1);
-  XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask|ButtonReleaseMask);
+  XSelectInput(display, window, KeyPressMask|PointerMotionMask|StructureNotifyMask|ButtonPressMask|ButtonReleaseMask|ExposureMask);
   XStoreName(display, window, "bj");
   XMapWindow(display, window);
 }
@@ -366,6 +368,7 @@ void
 drawinit() {
   pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, (unsigned int)wa.depth);
   xftdraw = XftDrawCreate(display, pixmap, vis, cmap);
+  pixw = WWIDTH; pixh = WHEIGHT;
 }
 
 void
@@ -426,10 +429,12 @@ drawflush() {
 
 void
 drawresize() {
+  if (pixw == WWIDTH && pixh == WHEIGHT) { return; }
   XftDrawDestroy(xftdraw);
   XFreePixmap(display, pixmap);
   pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, (unsigned int)wa.depth);
   xftdraw = XftDrawCreate(display, pixmap, vis, cmap);
+  pixw = WWIDTH; pixh = WHEIGHT;
 }
 
 void
@@ -980,6 +985,12 @@ pixeltocell(int px, int py, int *col, int *row) {
   if (*row >= tbuf->scroll + visrows) { *row = tbuf->scroll + visrows - 1; }
 }
 
+
+static inline void
+setbgpixel(void) {
+  XSetWindowBackground(display, window, colorbg.pixel);
+}
+
 #define SELSCROLLZONE 20
 int
 main(int argc, char *argv[]) {
@@ -1015,6 +1026,7 @@ main(int argc, char *argv[]) {
   fontinit();
   colorsinit();
   drawinit();
+  setbgpixel();
   tbufinit();
   tsminit();
   ptyinit();
@@ -1030,6 +1042,7 @@ main(int argc, char *argv[]) {
       toggletheme = 0;
       isdark = !isdark;
       applycolors();
+      setbgpixel();
     }
     while (XPending(display) > 0) {
       XNextEvent(display, &ev);
@@ -1048,9 +1061,11 @@ main(int argc, char *argv[]) {
                 tbufs[r].row = tbufs[r].scroll + visrows - 1;
               }
             }
-            screendirty = 1;
-            drawresize();
-            ptyresize();
+            resizepending = 1;
+          }
+          break;
+        case Expose: {
+            if (ev.xexpose.count == 0) { exposepending = 1; }
           }
           break;
         case SelectionRequest:
@@ -1238,6 +1253,16 @@ main(int argc, char *argv[]) {
           break;
       }
     }
+    if (resizepending || exposepending) {
+      if (resizepending) {
+        drawresize();
+        ptyresize();
+      }
+      resizepending = 0; exposepending = 0;
+      screendirty=1;
+      thenr.tv_sec = 0;
+      thenr.tv_nsec = 0;
+    }
     GETNS(nowr);
     remaining = GFXTICKNS - DIFFNS(thenr, nowr);
     if (remaining < 0) { remaining = 0; }
@@ -1339,8 +1364,8 @@ main(int argc, char *argv[]) {
         } else {
           drawcell(ccol, crow, curcell, cfg, cbg);
         }
-        drawflush();
       }
+      drawflush();
     }
   }
   ptykill();
