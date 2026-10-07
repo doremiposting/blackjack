@@ -13,6 +13,7 @@
 #include <signal.h>
 
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
 #include <X11/Xatom.h>
 
@@ -47,6 +48,7 @@ int selmousex, selmousey;
 /* #define TBUFROWS 128 */
 #define TBUFROWS 8196
 #define CDEFAULT 255 /* sentinel: use terminal defaults for fg and bg */
+#define MAXVISROWS 1024
 #define ATTRBOLD (1<<0)
 #define ATTRDIM (1<<1)
 #define ATTRITALIC (1<<2)
@@ -177,6 +179,8 @@ long long elapsedr;
 unsigned int WWIDTH, WHEIGHT;
 unsigned int pixw, pixh;
 int resizepending, exposepending;
+Cell prevcells[MAXVISROWS][TBUFCOLS];
+int fulldirty;
 
 #define ERRORTH -1
 #define LIGHTTH 0
@@ -251,6 +255,22 @@ fontkill() {
   XftFontClose(display, font);
 }
 
+void
+setsizehints() {
+  XSizeHints *h;
+  h = XAllocSizeHints();
+  if (!h) { return; }
+  h->flags = PBaseSize | PResizeInc | PMinSize;
+  h->base_width = 0;
+  h->base_height = 0;
+  h->width_inc = font->max_advance_width;
+  h->height_inc = font->ascent + font->descent;
+  h->min_width = font->max_advance_width;
+  h->min_height = font->ascent + font->descent;
+  XSetWMNormalHints(display, window, h);
+  XFree(h);
+}
+
 void drawresize();
 void ptyresize();
 
@@ -275,6 +295,7 @@ changefontsz(int delta) {
   fontinit();
   visrows = (int)(WHEIGHT / (unsigned int)(font->ascent + font->descent));
   viscols = (int)(WWIDTH / (unsigned int)font->max_advance_width);
+  setsizehints();
   for (i = 0; i < 2; i++) {
     tbufs[i].scrolltop = 0;
     tbufs[i].scrollbot = 0;
@@ -435,6 +456,7 @@ drawresize() {
   pixmap = XCreatePixmap(display, window, WWIDTH, WHEIGHT, (unsigned int)wa.depth);
   xftdraw = XftDrawCreate(display, pixmap, vis, cmap);
   pixw = WWIDTH; pixh = WHEIGHT;
+  fulldirty = 1;
 }
 
 void
@@ -1015,7 +1037,9 @@ main(int argc, char *argv[]) {
   int mcol, mrow, rrow, rcol;
   int newcol, newrow;
   int incell; /* westfallen */
+  int rowforce, rdirty;
   darkth = detectdark();
+  fulldirty = 1;
   toggletheme = 0;
   fontsize = 13;
   if (darkth < 0) {
@@ -1024,6 +1048,7 @@ main(int argc, char *argv[]) {
   signal(SIGUSR1, handlesigusr1);
   x11init();
   fontinit();
+  setsizehints();
   colorsinit();
   drawinit();
   setbgpixel();
@@ -1043,6 +1068,7 @@ main(int argc, char *argv[]) {
       isdark = !isdark;
       applycolors();
       setbgpixel();
+      fulldirty = 1;
     }
     while (XPending(display) > 0) {
       XNextEvent(display, &ev);
@@ -1253,13 +1279,14 @@ main(int argc, char *argv[]) {
           break;
       }
     }
-    if (resizepending || exposepending) {
-      if (resizepending) {
-        drawresize();
-        ptyresize();
-      }
-      resizepending = 0; exposepending = 0;
-      screendirty=1;
+    if (resizepending) {
+      drawresize();
+      ptyresize();
+      resizepending = 0;
+      screendirty = 1;
+    }
+    if (exposepending) {
+      exposepending = 0;
       thenr.tv_sec = 0;
       thenr.tv_nsec = 0;
     }
@@ -1315,8 +1342,18 @@ main(int argc, char *argv[]) {
       }
       if (screendirty) {
         screendirty = 0;
-        XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
-        for (r = 0; r < visrows && (tbuf->scroll + r) < TBUFROWS; r++) {
+        rowforce = fulldirty || selexists;
+        fulldirty = 0;
+        if (rowforce) {
+          XftDrawRect(xftdraw, &colorbg, 0, 0, WWIDTH, WHEIGHT);
+        }
+        for (r = 0; r < visrows 
+            && (tbuf->scroll + r) < TBUFROWS
+            && r < MAXVISROWS;
+            r++) {
+          rdirty = rowforce || memcmp(prevcells[r], &tbuf->lines[tbuf->scroll + r][0],
+              (size_t)viscols * sizeof(Cell)) != 0;
+          if (!rdirty) { continue; }
           for (ncol = 0; ncol < viscols; ncol++) {
             cell = &tbuf->lines[tbuf->scroll + r][ncol];
             nfg = cellcolor(cell->fg, 1);
@@ -1334,6 +1371,8 @@ main(int argc, char *argv[]) {
             }
             drawcell(ncol, r, cell, nfg, nbg);
           }
+          memcpy(prevcells[r], &tbuf->lines[tbuf->scroll + r][0], 
+              (size_t)viscols * sizeof(Cell));
         }
       }
       if (crow >= 0 && crow < visrows) {
